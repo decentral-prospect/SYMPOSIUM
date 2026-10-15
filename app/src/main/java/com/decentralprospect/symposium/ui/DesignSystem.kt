@@ -1,11 +1,8 @@
 package com.decentralprospect.symposium
 
-import android.content.ContentValues
-import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
+import android.util.Base64
 import android.util.Patterns
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -19,26 +16,33 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
-import java.io.File
 import android.graphics.Color as AndroidColor
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 enum class AccessibilityFontScale(
-    val label: String,
-    val talkBackLabel: String,
+    val labelId: TextId,
+    val talkBackLabelId: TextId,
     val multiplier: Float
 ) {
-    SYSTEM("Системный", "Системный размер шрифта Android", 1f),
-    LARGE("Крупный", "Крупный шрифт", 1.18f),
-    EXTRA_LARGE("Очень крупный", "Очень крупный шрифт", 1.34f)
+    SYSTEM(TextId.SYSTEM, TextId.ANDROID_SYSTEM_FONT_SIZE, 1f),
+    LARGE(TextId.LARGE, TextId.LARGE_FONT, 1.18f),
+    EXTRA_LARGE(TextId.EXTRA_LARGE, TextId.EXTRA_LARGE_FONT, 1.34f)
 }
 
 enum class AppThemeMode(
-    val label: String,
-    val talkBackLabel: String
+    val labelId: TextId,
+    val talkBackLabelId: TextId
 ) {
-    SYSTEM("Системная", "Использовать тему устройства"),
-    DARK("Тёмная", "Всегда использовать тёмную тему"),
-    LIGHT("Светлая", "Всегда использовать светлую тему")
+    SYSTEM(TextId.SYSTEM_2, TextId.USE_THE_DEVICE_THEME),
+    DARK(TextId.DARK, TextId.ALWAYS_USE_THE_DARK_THEME),
+    LIGHT(TextId.LIGHT, TextId.ALWAYS_USE_THE_LIGHT_THEME)
 }
 
 
@@ -57,23 +61,34 @@ internal val CardShape = RoundedCornerShape(14.dp)
 internal val InnerCardShape = RoundedCornerShape(10.dp)
 internal val AppButtonShape = RoundedCornerShape(10.dp)
 internal const val DEFAULT_RELAY_HTTP_PORT = 443
+internal const val MAX_INVITATION_TOKEN_LENGTH = 8_192
+private const val MAX_CONNECT_ENDPOINT_LENGTH = 300
+private const val MAX_CONNECT_ROOM_LENGTH = 128
+private const val MAX_CONNECT_USERNAME_LENGTH = 128
+private const val MAX_CONNECT_MODERATOR_KEY_LENGTH = 256
+private const val INVITATION_TOKEN_PREFIX = "SPT1."
+private const val INVITATION_BASE64_FLAGS = Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+private const val INVITATION_TOKEN_VERSION = 1
+private const val INVITATION_TOKEN_NONCE_BYTES = 12
+private const val INVITATION_TOKEN_TAG_BITS = 128
+private val INVITATION_TOKEN_AAD = "SymposiumInvitationToken/v1".toByteArray(Charsets.UTF_8)
+internal fun sshPasswordStorageNotice(): String =
+    tr(TextId.WE_DO_NOT_STORE_THE_SERVER_PASSWORD_INSTEAD_SYMPOSIUM_CREATES_AN_SSH_KEY)
 
 internal enum class RootScreen { HOME, MENU, SERVERS, SETTINGS, ABOUT }
-internal enum class ConnectLinkFormat { SYMPOSIUM_DEEP_LINK, HTTP_REDIRECT }
 
-internal fun connectLinkFormatLabel(format: ConnectLinkFormat): String {
-    return when (format) {
-        ConnectLinkFormat.SYMPOSIUM_DEEP_LINK -> "symposium://"
-        ConnectLinkFormat.HTTP_REDIRECT -> "HTTPS redirect"
-    }
-}
+enum class MeetLayout(
+    private val fixedLabel: String? = null,
+    private val labelId: TextId? = null
+) {
+    AUTO(labelId = TextId.AUTO_LAYOUT),
+    GRID_2(fixedLabel = "2×2"),
+    GRID_3(fixedLabel = "3×3"),
+    GRID_4(fixedLabel = "4×4"),
+    SPOTLIGHT(labelId = TextId.SPOTLIGHT_LAYOUT);
 
-enum class MeetLayout(val label: String) {
-    AUTO("AUTO"),
-    GRID_2("2×2"),
-    GRID_3("3×3"),
-    GRID_4("4×4"),
-    SPOTLIGHT("SPOT")
+    val label: String
+        get() = labelId?.let(::tr) ?: fixedLabel.orEmpty()
 }
 
 internal fun columnsFor(layout: MeetLayout, count: Int): Int {
@@ -91,7 +106,7 @@ internal fun columnsFor(layout: MeetLayout, count: Int): Int {
     }
 }
 
-enum class CallViewMode { FOCUS, GRID }
+enum class CallViewMode { FOCUS, GRID, FULLSCREEN }
 
 enum class AudioOutputRoute {
     EARPIECE,
@@ -116,14 +131,15 @@ internal fun AudioOutputRoute.toWireValue(): String {
     }
 }
 
-internal data class ConnectLinkPayload(
+internal data class InvitationTokenPayload(
     val ip: String,
     val room: String,
+    val roomInstance: String,
     val tlsPin: String,
     val e2eeSecret: String,
+    val requiredVersion: String = "",
     val username: String = "",
-    val moderatorKey: String = "",
-    val format: ConnectLinkFormat = ConnectLinkFormat.SYMPOSIUM_DEEP_LINK
+    val moderatorKey: String = ""
 )
 
 data class LobbyPeerStatus(
@@ -132,104 +148,183 @@ data class LobbyPeerStatus(
     val joinedAt: Long = 0L
 )
 
-internal fun parseConnectLink(raw: String): ConnectLinkPayload? {
+internal fun parseInvitationToken(raw: String): InvitationTokenPayload? {
+    if (raw.isBlank() || raw.length > MAX_INVITATION_TOKEN_LENGTH) return null
+    return runCatching { parseInvitationTokenChecked(raw, enforceClientVersion = true) }.getOrNull()
+}
+
+internal fun invitationTokenRequiredVersionMismatch(raw: String): String? {
+    if (raw.isBlank() || raw.length > MAX_INVITATION_TOKEN_LENGTH) return null
+    val parsed = runCatching {
+        parseInvitationTokenChecked(raw, enforceClientVersion = false)
+    }.getOrNull() ?: return null
+    return parsed.requiredVersion.takeIf {
+        it.isNotBlank() && it != APP_VERSION
+    }
+}
+
+private fun parseInvitationTokenChecked(
+    raw: String,
+    enforceClientVersion: Boolean
+): InvitationTokenPayload? {
     val input = raw.trim()
-    if (input.isBlank()) return null
+    if (!input.startsWith(INVITATION_TOKEN_PREFIX) || input.any(Char::isWhitespace)) return null
+    val encodedEnvelope = input.removePrefix(INVITATION_TOKEN_PREFIX)
+    if (encodedEnvelope.isBlank()) return null
+    val envelope = Base64.decode(encodedEnvelope, INVITATION_BASE64_FLAGS)
+    if (Base64.encodeToString(envelope, INVITATION_BASE64_FLAGS) != encodedEnvelope) return null
+    val minimumEnvelopeSize = 1 + CONFERENCE_E2EE_SECRET_BYTES + INVITATION_TOKEN_NONCE_BYTES + 16
+    if (envelope.size < minimumEnvelopeSize) return null
+    if (envelope[0].toInt() != INVITATION_TOKEN_VERSION) return null
 
-    val uri = runCatching { Uri.parse(input) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.trim()?.lowercase().orEmpty()
-    val isDeepLink = scheme == "symposium"
-    val isHttpRedirect = scheme == "http" || scheme == "https"
-    if (!isDeepLink && !isHttpRedirect) return null
-
-    val room = uri.getQueryParameter("room")?.trim().orEmpty()
-    val tlsPin = uri.getQueryParameter("tlsPin")?.trim().orEmpty()
-    val username = uri.getQueryParameter("username")?.trim().orEmpty()
-    val moderatorKey = if (isDeepLink) uri.getQueryParameter("modKey")?.trim().orEmpty() else ""
-    val fragmentParams = Uri.parse("symposium://fragment?${uri.encodedFragment.orEmpty()}")
-    val e2eeSecret = runCatching {
-        normalizeConferenceE2eeSecret(fragmentParams.getQueryParameter("e2ee").orEmpty())
-    }.getOrNull().orEmpty()
-
-    val explicitIp = uri.getQueryParameter("ip")?.trim().orEmpty()
-    val httpHost = if (isHttpRedirect) uri.host?.trim().orEmpty() else ""
-    val httpPort = if (isHttpRedirect) uri.port else -1
-    val httpAuthority = when {
-        httpHost.isBlank() -> ""
-        httpPort > 0 && httpPort != DEFAULT_RELAY_HTTP_PORT -> "$httpHost:$httpPort"
-        else -> httpHost
-    }
-    val ip = when {
-        explicitIp.isBlank() -> httpAuthority
-        isHttpRedirect && httpPort > 0 && httpPort != DEFAULT_RELAY_HTTP_PORT &&
-            explicitIp.substringAfterLast(":", "").toIntOrNull() == null -> "$explicitIp:$httpPort"
-        else -> explicitIp
+    val secretBytes = envelope.copyOfRange(1, 1 + CONFERENCE_E2EE_SECRET_BYTES)
+    val nonceOffset = 1 + CONFERENCE_E2EE_SECRET_BYTES
+    val nonce = envelope.copyOfRange(nonceOffset, nonceOffset + INVITATION_TOKEN_NONCE_BYTES)
+    val ciphertext = envelope.copyOfRange(nonceOffset + INVITATION_TOKEN_NONCE_BYTES, envelope.size)
+    val plaintext = Cipher.getInstance("AES/GCM/NoPadding").run {
+        init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(secretBytes, "AES"),
+            GCMParameterSpec(INVITATION_TOKEN_TAG_BITS, nonce)
+        )
+        updateAAD(INVITATION_TOKEN_AAD)
+        doFinal(ciphertext)
     }
 
-    if (ip.isBlank() || room.isBlank() || tlsPin.isBlank() || e2eeSecret.isBlank()) return null
+    val fields = DataInputStream(ByteArrayInputStream(plaintext)).use { inputStream ->
+        val values = listOf(
+            inputStream.readTokenString(MAX_CONNECT_ENDPOINT_LENGTH),
+            inputStream.readTokenString(MAX_CONNECT_ROOM_LENGTH),
+            inputStream.readTokenString(64),
+            inputStream.readTokenString(128),
+            inputStream.readTokenString(64),
+            inputStream.readTokenString(MAX_CONNECT_USERNAME_LENGTH),
+            inputStream.readTokenString(MAX_CONNECT_MODERATOR_KEY_LENGTH)
+        )
+        if (inputStream.available() != 0) return null
+        values
+    }
+    val ip = fields[0].trim()
+    val room = fields[1].trim()
+    val roomInstance = fields[2].trim()
+    val tlsPin = normalizeRelayTlsPin(fields[3])
+    val requiredVersion = fields[4].trim()
+    val username = fields[5].trim()
+    val moderatorKey = fields[6].trim()
+    if (!isSafeConnectValue(room, MAX_CONNECT_ROOM_LENGTH, required = true)) return null
+    if (!isValidRoomInstance(roomInstance)) return null
+    if (!isSafeConnectValue(username, MAX_CONNECT_USERNAME_LENGTH, required = false)) return null
+    if (!isSafeConnectValue(moderatorKey, MAX_CONNECT_MODERATOR_KEY_LENGTH, required = false)) return null
+    if (requiredVersion.isNotBlank() && !isCanonicalVersion(requiredVersion)) return null
+    if (
+        enforceClientVersion &&
+        requiredVersion.isNotBlank() &&
+        requiredVersion != APP_VERSION
+    ) return null
 
-    return ConnectLinkPayload(
+    if (!isSafeConnectEndpoint(ip) || parseRelayEndpoint(ip) == null) return null
+    val e2eeSecret = encodeConferenceE2eeSecret(secretBytes)
+    return InvitationTokenPayload(
         ip = ip,
         room = room,
+        roomInstance = roomInstance,
         tlsPin = tlsPin,
         e2eeSecret = e2eeSecret,
+        requiredVersion = requiredVersion,
         username = username,
-        moderatorKey = moderatorKey,
-        format = if (isHttpRedirect) ConnectLinkFormat.HTTP_REDIRECT else ConnectLinkFormat.SYMPOSIUM_DEEP_LINK
+        moderatorKey = moderatorKey
     )
 }
 
-internal fun buildConnectDeepLink(
-    ip: String,
-    httpsPort: Int?,
-    room: String,
-    relayTlsPin: String?,
-    e2eeSecret: String,
-    moderatorKey: String? = null
-): String {
-    val pin = relayTlsPin?.trim().orEmpty()
-    val port = httpsPort ?: DEFAULT_RELAY_HTTP_PORT
-    val endpoint = if (port == DEFAULT_RELAY_HTTP_PORT) ip.trim() else "${ip.trim()}:$port"
-    val builder = Uri.Builder()
-        .scheme("symposium")
-        .authority("connect")
-        .appendQueryParameter("ip", endpoint)
-        .appendQueryParameter("room", room.trim())
-        .appendQueryParameter("tlsPin", pin)
-
-    val modKey = moderatorKey?.trim().orEmpty()
-    if (modKey.isNotBlank()) {
-        builder.appendQueryParameter("modKey", modKey)
+private fun DataInputStream.readTokenString(maxLength: Int): String {
+    val byteCount = readUnsignedShort()
+    require(byteCount <= maxLength * 4) { "invitation field is too large" }
+    val bytes = ByteArray(byteCount)
+    readFully(bytes)
+    return bytes.toString(Charsets.UTF_8).also {
+        require(it.toByteArray(Charsets.UTF_8).contentEquals(bytes)) { "invalid UTF-8" }
+        require(it.length <= maxLength) { "invitation field is too large" }
     }
-
-    builder.encodedFragment("e2ee=${Uri.encode(normalizeConferenceE2eeSecret(e2eeSecret))}")
-
-    return builder.build().toString()
 }
 
-internal fun buildConnectHttpRedirectLink(
+private fun DataOutputStream.writeTokenString(value: String, maxLength: Int) {
+    require(value.length <= maxLength) { "invitation field is too large" }
+    val bytes = value.toByteArray(Charsets.UTF_8)
+    require(bytes.size <= 65_535) { "invitation field is too large" }
+    writeShort(bytes.size)
+    write(bytes)
+}
+
+private fun isSafeConnectEndpoint(value: String): Boolean =
+    isSafeConnectValue(value, MAX_CONNECT_ENDPOINT_LENGTH, required = true) &&
+        value.none { it.isWhitespace() || it in "/\\?#@%" } &&
+        "://" !in value
+
+private fun isSafeConnectValue(value: String, maxLength: Int, required: Boolean): Boolean {
+    if (required && value.isBlank()) return false
+    return value.length <= maxLength && value.none(Char::isISOControl)
+}
+
+internal fun verifiedRoomRequiredVersion(room: OpenRoomInfo): String? =
+    room.requiredVersion.trim().takeIf(::isCanonicalVersion)
+
+internal fun buildInvitationToken(
     ip: String,
     httpsPort: Int?,
     room: String,
+    roomInstance: String,
     relayTlsPin: String?,
     e2eeSecret: String,
-    moderatorKey: String? = null
+    requiredVersion: String,
+    moderatorKey: String? = null,
+    random: SecureRandom = SecureRandom()
 ): String {
-    val pin = relayTlsPin?.trim().orEmpty()
+    val pin = normalizeRelayTlsPin(relayTlsPin?.trim().orEmpty())
     val port = httpsPort ?: DEFAULT_RELAY_HTTP_PORT
-    val authority = if (port == 443) ip.trim() else "${ip.trim()}:$port"
-
-    val builder = Uri.Builder()
-        .scheme("https")
-        .encodedAuthority(authority)
-        .path("connect")
-        .appendQueryParameter("ip", authority)
-        .appendQueryParameter("room", room.trim())
-        .appendQueryParameter("tlsPin", pin)
-
-    builder.encodedFragment("e2ee=${Uri.encode(normalizeConferenceE2eeSecret(e2eeSecret))}")
-
-    return builder.build().toString()
+    val endpoint = if (port == DEFAULT_RELAY_HTTP_PORT) ip.trim() else "${ip.trim()}:$port"
+    require(isSafeConnectEndpoint(endpoint) && parseRelayEndpoint(endpoint) != null) {
+        "invalid relay endpoint"
+    }
+    val version = requiredVersion.trim().also {
+        require(isCanonicalVersion(it)) { "invalid required version" }
+    }
+    val normalizedRoom = room.trim().also {
+        require(isSafeConnectValue(it, MAX_CONNECT_ROOM_LENGTH, required = true)) { "invalid room" }
+    }
+    require(isValidRoomInstance(roomInstance)) { "invalid room instance" }
+    val modKey = moderatorKey?.trim().orEmpty()
+    require(isSafeConnectValue(modKey, MAX_CONNECT_MODERATOR_KEY_LENGTH, required = false)) {
+        "invalid moderator key"
+    }
+    val secretBytes = decodeConferenceE2eeSecret(e2eeSecret)
+    val plaintext = ByteArrayOutputStream().use { buffer ->
+        DataOutputStream(buffer).use { output ->
+            output.writeTokenString(endpoint, MAX_CONNECT_ENDPOINT_LENGTH)
+            output.writeTokenString(normalizedRoom, MAX_CONNECT_ROOM_LENGTH)
+            output.writeTokenString(roomInstance.trim(), 64)
+            output.writeTokenString(pin, 128)
+            output.writeTokenString(version, 64)
+            output.writeTokenString("", MAX_CONNECT_USERNAME_LENGTH)
+            output.writeTokenString(modKey, MAX_CONNECT_MODERATOR_KEY_LENGTH)
+        }
+        buffer.toByteArray()
+    }
+    val nonce = ByteArray(INVITATION_TOKEN_NONCE_BYTES).also(random::nextBytes)
+    val ciphertext = Cipher.getInstance("AES/GCM/NoPadding").run {
+        init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(secretBytes, "AES"),
+            GCMParameterSpec(INVITATION_TOKEN_TAG_BITS, nonce)
+        )
+        updateAAD(INVITATION_TOKEN_AAD)
+        doFinal(plaintext)
+    }
+    val envelope = ByteArray(1 + secretBytes.size + nonce.size + ciphertext.size)
+    envelope[0] = INVITATION_TOKEN_VERSION.toByte()
+    secretBytes.copyInto(envelope, destinationOffset = 1)
+    nonce.copyInto(envelope, destinationOffset = 1 + secretBytes.size)
+    ciphertext.copyInto(envelope, destinationOffset = 1 + secretBytes.size + nonce.size)
+    return INVITATION_TOKEN_PREFIX + Base64.encodeToString(envelope, INVITATION_BASE64_FLAGS)
 }
 
 internal fun generateQrBitmap(content: String, sizePx: Int = 900): Bitmap {
@@ -262,49 +357,8 @@ internal fun generateQrBitmap(content: String, sizePx: Int = 900): Bitmap {
     return bitmap
 }
 
-internal fun saveQrBitmapToPictures(
-    context: Context,
-    bitmap: Bitmap,
-    fileName: String = "symposium_qr_${System.currentTimeMillis()}.png"
-): Uri? {
-    return runCatching {
-        val resolver = context.contentResolver
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Symposium")
-                put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                ?: return@runCatching null
-
-            resolver.openOutputStream(uri)?.use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            } ?: return@runCatching null
-
-            values.clear()
-            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-
-            uri
-        } else {
-            val dir = File(
-                context.getExternalFilesDir(null),
-                "Symposium"
-            ).apply { mkdirs() }
-
-            val file = File(dir, fileName)
-            file.outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            }
-
-            Uri.fromFile(file)
-        }
-    }.getOrNull()
-}
+internal fun generateQrBitmapOrNull(content: String, sizePx: Int = 900): Bitmap? =
+    runCatching { generateQrBitmap(content, sizePx) }.getOrNull()
 
 internal fun normalizeIpInput(raw: String): String {
     val input = raw.trim()
@@ -343,12 +397,15 @@ data class InstallServer(
     val ip: String,
     val username: String,
     val password: String,
+    val sshKeyInstalled: Boolean = false,
     val installed: Boolean,
     val sshHostKeyPin: String? = null,
     val httpsPort: Int? = null,
     val relayTlsPin: String? = null,
     val adminToken: String? = null,
+    val adminTokenAvailable: Boolean = !adminToken.isNullOrBlank(),
     val deploymentProfile: DeploymentProfile? = null,
+    val relayCapacity: RelayCapacityConfig = RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD),
     val openRooms: List<OpenRoomInfo> = emptyList(),
     val relayVersion: String? = null,
     val relayVersionState: RelayVersionState = RelayVersionState.UNKNOWN
@@ -368,25 +425,21 @@ internal fun displayName(peer: LobbyPeerStatus): String {
     return if (n.isNotBlank()) n else peer.peerId
 }
 
-internal fun tileColorFromName(name: String): Color {
-    val ch = name.trim().firstOrNull()?.uppercaseChar() ?: '#'
-    val hue = ((ch.code * 29) % 360).toFloat()
-    return hsl(hue, 0.45f, 0.19f)
-}
+internal fun inactiveVideoColor(): Color = Color(0xFF17324D)
 
 internal fun serverStateLabel(server: InstallServer): String {
     if (server.relayVersionState == RelayVersionState.UNKNOWN) {
-        return "Проверка версии…"
+        return tr(TextId.CHECKING_VERSION)
     }
     if (!server.installed || server.relayVersionState == RelayVersionState.NOT_INSTALLED) {
-        return "SymposiumRelay не установлен"
+        return tr(TextId.SYMPOSIUMRELAY_IS_NOT_INSTALLED)
     }
 
     return when (server.relayVersionState) {
-        RelayVersionState.CURRENT -> "Актуальная · ${server.relayVersion.orEmpty()}"
-        RelayVersionState.OUTDATED -> "Не актуальна · ${server.relayVersion ?: "—"}"
-        RelayVersionState.UNKNOWN -> "Проверка версии…"
-        RelayVersionState.NOT_INSTALLED -> "SymposiumRelay не установлен"
+        RelayVersionState.CURRENT -> tr(TextId.RELAY_UP_TO_DATE, server.relayVersion.orEmpty())
+        RelayVersionState.OUTDATED -> tr(TextId.RELAY_OUTDATED, server.relayVersion ?: "—")
+        RelayVersionState.UNKNOWN -> tr(TextId.CHECKING_VERSION)
+        RelayVersionState.NOT_INSTALLED -> tr(TextId.SYMPOSIUMRELAY_IS_NOT_INSTALLED)
     }
 }
 
@@ -422,6 +475,7 @@ internal interface UiBinder {
     fun setAudioRoute(route: String, headsetAvailable: Boolean)
     fun setRole(role: String)
     fun setLobbyWaiting(waiting: Boolean)
+    fun onRelayConnectionAuthenticated()
     fun updateLobbyPending(peers: List<LobbyPeerStatus>)
     fun setMuteAll(on: Boolean)
     fun setForcedMute(on: Boolean)

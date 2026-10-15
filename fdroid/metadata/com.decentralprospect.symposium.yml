@@ -1,0 +1,66 @@
+AntiFeatures:
+  Tracking:
+    en-US: Automatically contacts symposium-dp.app to check for a newer app version
+      when the application starts.
+Categories:
+  - Voice & Video Chat
+License: Apache-2.0
+WebSite: https://symposium-dp.app
+SourceCode: https://github.com/decentral-prospect/symposium
+IssueTracker: https://github.com/decentral-prospect/symposium/issues
+Changelog: https://github.com/decentral-prospect/symposium/releases
+
+AutoName: Symposium
+
+RepoType: git
+Repo: https://github.com/decentral-prospect/symposium.git
+
+Builds:
+  - versionName: 0.3.4
+    versionCode: 3344
+    disable: Waiting for a public commit containing the F-Droid source build
+    commit: c9745e21b79dc94f930ff6b23fb5b3d4bc6ff911
+    sudo:
+      - apt-get update
+      - apt-get install -y build-essential git python3 jq
+      - apt-get install -y -t trixie-backports golang-1.25-go
+    gradle:
+      - yes
+    output: app/build/outputs/apk/release/app-release-unsigned.apk
+    prebuild:
+      - export PATH=/usr/lib/go-1.25/bin:$PATH
+      - test -x /usr/lib/go-1.25/bin/go
+      - rm -f app/src/main/assets/symposium/symposium-server-linux-amd64
+      - rm -f build/relay/bundled-relay.json
+      - python3 scripts/relay-source.py fetch .relay-work/source
+      - python3 scripts/relay-source.py download-deps .relay-work/source
+    build:
+      - export PATH=/usr/lib/go-1.25/bin:$PATH
+      - test -x /usr/lib/go-1.25/bin/go
+      - python3 scripts/relay-source.py build .relay-work/source
+
+MaintainerNotes: |
+  The disabled build's commit is the existing release base, not a buildable
+  revision of this recipe. After publishing the source-build changes, replace
+  commit with their reviewed public Git SHA and remove disable.
+
+  The bundled Linux amd64 relay is installed on the user's server over SSH.
+  Its source tag and full commit SHA are checked against relay.lock.json.
+  The runtime installer can also download the relay's GitHub release asset;
+  that separate asset is verified against the release checksum in the lock.
+
+  Go 1.25 comes from trixie-backports. Dependency preparation authenticates
+  modules using go.sum and retains only go work vendor output in a controlled
+  workspace outside the pristine relay checkout. Download and compiler caches
+  used during preparation are temporary and outside the scanned source tree.
+  The build verifies the prepared sources and compiles offline after scanning.
+  No scanignore or scandelete exceptions are needed for Go dependencies.
+
+  Tracking describes the automatic app version check. Optional telemetry has
+  no endpoint in this build. Store text and graphics come from upstream fastlane.
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^[0-9]+\.[0-9]+\.[0-9]+$
+UpdateCheckData: version.properties|VERSION_CODE=(\d+)|.|VERSION_NAME=(.+)
+CurrentVersion: 0.3.4
+CurrentVersionCode: 3344

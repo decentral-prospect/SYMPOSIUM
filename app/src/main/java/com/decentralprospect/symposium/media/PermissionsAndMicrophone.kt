@@ -29,7 +29,7 @@ internal fun CallRuntime.askMic(startServiceAfterGrant: Boolean = false) {
     if (!joinedRoom || lobbyWaiting || webSocket == null) {
         micEnabledState = false
         setMicUi()
-        Toast.makeText(appContext, tr("Сначала подключитесь к комнате"), Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, tr(TextId.JOIN_A_ROOM_FIRST), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -39,7 +39,7 @@ internal fun CallRuntime.askMic(startServiceAfterGrant: Boolean = false) {
         setMicUi()
         startCallService(microphone = false)
         sendSelfMediaState(audioEnabled = false)
-        Toast.makeText(appContext, tr("Микрофон выключен модератором"), Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, tr(TextId.MICROPHONE_MUTED_BY_MODERATOR), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -64,7 +64,7 @@ internal fun CallRuntime.askMic(startServiceAfterGrant: Boolean = false) {
         if (requester == null) {
             micPermissionInFlight = false
             pendingStartCallServiceAfterMicPermission = false
-            Toast.makeText(appContext, tr("Откройте приложение, чтобы разрешить микрофон"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(appContext, tr(TextId.OPEN_THE_APP_TO_ALLOW_MICROPHONE_ACCESS), Toast.LENGTH_SHORT).show()
         } else {
             micPermissionInFlight = true
             pendingStartCallServiceAfterMicPermission = startServiceAfterGrant
@@ -95,7 +95,7 @@ internal fun CallRuntime.askCameraForVideoEnable() {
             cameraPermissionInFlight = false
             cameraRuntimeState = "permission-request-needs-activity"
             updateCameraDebug("request-camera-permission-no-activity")
-            Toast.makeText(appContext, tr("Откройте приложение, чтобы разрешить камеру"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(appContext, tr(TextId.OPEN_THE_APP_TO_ALLOW_CAMERA_ACCESS), Toast.LENGTH_SHORT).show()
         } else {
             cameraPermissionInFlight = true
             cameraRuntimeState = "awaiting-permission"

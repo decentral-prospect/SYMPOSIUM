@@ -41,33 +41,32 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
-      - name: Check out locked relay source
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          relay_version="$(jq -er '.version' relay.lock.json)"
-          [[ "$relay_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
-          relay_dir="$RUNNER_TEMP/symposium-relay"
-          git init "$relay_dir"
-          git -C "$relay_dir" remote add origin https://github.com/decentral-prospect/symposium-relay.git
-          git -C "$relay_dir" fetch --depth=1 origin "refs/tags/$relay_version:refs/tags/$relay_version"
-          git -C "$relay_dir" checkout --detach "refs/tags/$relay_version"
-          relay_revision="$(git -C "$relay_dir" rev-parse HEAD)"
-          [[ "$relay_revision" =~ ^[0-9a-f]{40}$ ]]
-          echo "SYMPOSIUM_RELAY_DIR=$relay_dir" >>"$GITHUB_ENV"
-          echo "SYMPOSIUM_RELAY_REVISION=$relay_revision" >>"$GITHUB_ENV"
+      - name: Test relay lock tooling
+        run: scripts/test-relay-tools.sh
+
+      - name: Check out relay source pinned by relay.lock.json
+        run: python3 scripts/relay-source.py fetch .relay-work/source
 
       - name: Set up Go from locked relay
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: ${{ runner.temp }}/symposium-relay/go.mod
-          cache-dependency-path: ${{ runner.temp }}/symposium-relay/go.sum
+          go-version-file: .relay-work/source/go.mod
+          cache: false
 
-      - name: Test relay lock tooling
-        run: scripts/test-relay-tools.sh
+      - name: Test relay source build safeguards
+        run: python3 scripts/test-relay-source.py
 
-      - name: Fetch locked relay
-        run: scripts/fetch-relay.sh
+      - name: Download locked Go module sources
+        run: python3 scripts/relay-source.py download-deps .relay-work/source
+
+      - name: Build bundled relay from verified source without network downloads
+        run: python3 scripts/relay-source.py build .relay-work/source
+
+      - name: Use the source-built relay in media tests
+        run: |
+          echo "SYMPOSIUM_RELAY_DIR=$GITHUB_WORKSPACE/.relay-work/source" >>"$GITHUB_ENV"
+          echo "SYMPOSIUM_RELAY_REVISION=$(jq -er '.source_revision' relay.lock.json)" >>"$GITHUB_ENV"
+          echo "SYMPOSIUM_E2E_RELAY_MODE=bundled" >>"$GITHUB_ENV"
 
       - name: Run Android emulator media E2E
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0

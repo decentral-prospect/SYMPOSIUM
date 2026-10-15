@@ -62,13 +62,28 @@ jobs:
       - name: Test relay lock tooling
         run: scripts/test-relay-tools.sh
 
-      - name: Fetch locked relay
-        run: scripts/fetch-relay.sh
+      - name: Check out relay source pinned by relay.lock.json
+        run: python3 scripts/relay-source.py fetch .relay-work/source
+
+      - name: Set up Go from locked relay
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .relay-work/source/go.mod
+          cache: false
+
+      - name: Test relay source build safeguards
+        run: python3 scripts/test-relay-source.py
+
+      - name: Download locked Go module sources
+        run: python3 scripts/relay-source.py download-deps .relay-work/source
+
+      - name: Build bundled relay from verified source without network downloads
+        run: python3 scripts/relay-source.py build .relay-work/source
 
       - name: Verify locked relay provenance
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/verify-relay-provenance.sh
+        run: scripts/verify-relay-provenance.sh --download
 
       - name: Reconstruct release keystore
         id: signing

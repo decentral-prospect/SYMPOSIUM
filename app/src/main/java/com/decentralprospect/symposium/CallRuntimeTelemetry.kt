@@ -11,24 +11,25 @@ internal fun CallRuntime.privacyPrefs() = appContext.getSharedPreferences(PRIVAC
 internal fun CallRuntime.loadTelemetryPrivacyPrefs() {
     val prefs = privacyPrefs()
     telemetryEnabledState = prefs.getBoolean(PREF_TELEMETRY_ENABLED, false)
-    telemetryPromptShownState = prefs.getBoolean(PREF_TELEMETRY_PROMPT_SHOWN, false)
 }
 
 internal fun CallRuntime.persistTelemetryPrivacyPrefs() {
     privacyPrefs().edit()
         .putBoolean(PREF_TELEMETRY_ENABLED, telemetryEnabledState)
-        .putBoolean(PREF_TELEMETRY_PROMPT_SHOWN, telemetryPromptShownState)
         .apply()
 }
 
 internal fun CallRuntime.setExternalTelemetryEnabled(enabled: Boolean, showToast: Boolean = false) {
-    telemetryPromptShownState = true
     telemetryEnabledState = enabled
     persistTelemetryPrivacyPrefs()
 
     if (showToast) {
-        val message = if (enabled) "Анонимная диагностика включена" else "Анонимная диагностика выключена"
-        Toast.makeText(appContext, tr(message), Toast.LENGTH_SHORT).show()
+        val messageId = if (enabled) {
+            TextId.ANONYMOUS_DIAGNOSTICS_ENABLED
+        } else {
+            TextId.ANONYMOUS_DIAGNOSTICS_DISABLED
+        }
+        Toast.makeText(appContext, tr(messageId), Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -39,6 +40,7 @@ internal fun CallRuntime.externalTelemetryActive(): Boolean {
 
 internal fun CallRuntime.startTelemetry() {
     loadTelemetryPrivacyPrefs()
+    if (!externalTelemetryActive()) return
     val client = TelemetryClient.get(appContext)
     client.sendLifecycleSignals()
 }

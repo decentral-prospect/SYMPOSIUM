@@ -7,7 +7,11 @@
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="first_party_telemetry.xml"/>
+    <exclude domain="sharedpref" path="install_servers.xml"/>
     <exclude domain="sharedpref" path="install_servers_secure.xml"/>
+    <exclude domain="sharedpref" path="install_servers_admin_secure_v2.xml"/>
+    <exclude domain="sharedpref" path="conference_e2ee_secrets_v1.xml"/>
+    <exclude domain="sharedpref" path="relay_tls_pin_trust_v1.xml"/>
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

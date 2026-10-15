@@ -1,0 +1,3 @@
+Symposium is an open-source application for audio/video conferencing.
+
+Join conferences using a token or a QR code, or deploy SymposiumRelay on your own server with just a few clicks to create rooms for your community directly from the app.

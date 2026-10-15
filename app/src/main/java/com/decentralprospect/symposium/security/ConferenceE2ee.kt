@@ -30,7 +30,11 @@ private val E2EE_SECRET_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")
 internal fun generateConferenceE2eeSecret(random: SecureRandom = SecureRandom()): String {
     val bytes = ByteArray(CONFERENCE_E2EE_SECRET_BYTES)
     random.nextBytes(bytes)
-    return encodeConferenceE2eeSecret(bytes)
+    return try {
+        encodeConferenceE2eeSecret(bytes)
+    } finally {
+        bytes.fill(0)
+    }
 }
 
 internal fun decodeConferenceE2eeSecret(raw: String): ByteArray {
@@ -47,14 +51,30 @@ internal fun decodeConferenceE2eeSecret(raw: String): ByteArray {
     return decoded
 }
 
-internal fun normalizeConferenceE2eeSecret(raw: String): String =
-    encodeConferenceE2eeSecret(decodeConferenceE2eeSecret(raw))
+internal fun normalizeConferenceE2eeSecret(raw: String): String {
+    val bytes = decodeConferenceE2eeSecret(raw)
+    return try {
+        encodeConferenceE2eeSecret(bytes)
+    } finally {
+        bytes.fill(0)
+    }
+}
 
-private fun encodeConferenceE2eeSecret(bytes: ByteArray): String =
+internal fun encodeConferenceE2eeSecret(bytes: ByteArray): String =
     Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
-internal class ConferenceE2eeSecretStore(context: Context) {
+internal class ConferenceE2eeSecretStore(
+    context: Context,
+    private val preferencesName: String = E2EE_PREFS_NAME
+) {
     private val appContext = context.applicationContext
+    private val secretCipher = AuthenticatedSecretCipher(
+        context = appContext,
+        purpose = "conference-e2ee",
+        protectionRequired = {
+            preferencesName == E2EE_PREFS_NAME && isSecretProtectionEnabled(appContext)
+        }
+    )
 
     private val masterKey: MasterKey by lazy {
         MasterKey.Builder(appContext)
@@ -65,46 +85,109 @@ internal class ConferenceE2eeSecretStore(context: Context) {
     private val securePrefs by lazy {
         EncryptedSharedPreferences.create(
             appContext,
-            E2EE_PREFS_NAME,
+            preferencesName,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     }
 
-    fun getOrCreate(host: String, port: Int?, room: String): String {
-        val key = storageKey(host, port, room)
-        val existing = securePrefs.getString(key, null)
-        if (!existing.isNullOrBlank()) {
-            runCatching { normalizeConferenceE2eeSecret(existing) }.getOrNull()?.let { return it }
+    fun hasEncryptedSecrets(): Boolean = securePrefs.all.isNotEmpty()
+
+    fun get(host: String, port: Int?, room: String, roomInstance: String): String? {
+        val key = storageKey(host, port, room, roomInstance)
+        val stored = securePrefs.getString(key, null) ?: return null
+        val opened = runCatching { secretCipher.open(stored) }.getOrNull() ?: return null
+        val secret = runCatching { normalizeConferenceE2eeSecret(opened.value) }.getOrNull()
+            ?: return null
+        if (opened.requiresMigration) {
+            check(securePrefs.edit().putString(key, secretCipher.seal(secret)).commit()) {
+                "failed to migrate the conference E2EE secret"
+            }
         }
+        return secret
+    }
+
+    fun getOrCreate(host: String, port: Int?, room: String, roomInstance: String): String {
+        val key = storageKey(host, port, room, roomInstance)
+        get(host, port, room, roomInstance)?.let { return it }
+        // A legacy key was bound only to the room name. Reusing it for a newly
+        // introduced instance would preserve the cross-recreation weakness, so
+        // discard it and generate fresh material for the concrete instance.
+        securePrefs.edit().remove(legacyStorageKey(host, port, room)).apply()
         return generateConferenceE2eeSecret().also { secret ->
-            check(securePrefs.edit().putString(key, secret).commit()) {
+            check(securePrefs.edit().putString(key, secretCipher.seal(secret)).commit()) {
                 "failed to store the conference E2EE secret"
             }
         }
     }
 
-    fun rotate(host: String, port: Int?, room: String): String =
+    fun rotate(host: String, port: Int?, room: String, roomInstance: String): String =
         generateConferenceE2eeSecret().also { secret ->
-            check(securePrefs.edit().putString(storageKey(host, port, room), secret).commit()) {
+            check(
+                securePrefs.edit()
+                    .putString(storageKey(host, port, room, roomInstance), secretCipher.seal(secret))
+                    .commit()
+            ) {
                 "failed to rotate the conference E2EE secret"
             }
         }
 
-    fun save(host: String, port: Int?, room: String, rawSecret: String): String {
+    fun save(host: String, port: Int?, room: String, roomInstance: String, rawSecret: String): String {
         val secret = normalizeConferenceE2eeSecret(rawSecret)
-        check(securePrefs.edit().putString(storageKey(host, port, room), secret).commit()) {
+        check(
+            securePrefs.edit()
+                .putString(storageKey(host, port, room, roomInstance), secretCipher.seal(secret))
+                .commit()
+        ) {
             "failed to store the imported conference E2EE secret"
         }
         return secret
     }
 
-    fun remove(host: String, port: Int?, room: String) {
-        securePrefs.edit().remove(storageKey(host, port, room)).apply()
+    fun remove(host: String, port: Int?, room: String, roomInstance: String) {
+        securePrefs.edit()
+            .remove(storageKey(host, port, room, roomInstance))
+            .remove(legacyStorageKey(host, port, room))
+            .apply()
     }
 
-    private fun storageKey(host: String, port: Int?, room: String): String {
+    fun removeAll(host: String, port: Int?, rooms: Iterable<OpenRoomInfo>) {
+        val editor = securePrefs.edit()
+        rooms.forEach { room ->
+            if (isValidRoomInstance(room.roomInstance)) {
+                editor.remove(storageKey(host, port, room.name, room.roomInstance))
+            }
+            editor.remove(legacyStorageKey(host, port, room.name))
+        }
+        check(editor.commit()) { "failed to remove the conference E2EE secrets" }
+    }
+
+    fun hasStoredSecrets(): Boolean = securePrefs.all.isNotEmpty()
+
+    fun migrateAll() {
+        val editor = securePrefs.edit()
+        var changed = false
+        securePrefs.all.forEach { (key, value) ->
+            val stored = value as? String ?: return@forEach
+            val opened = secretCipher.open(stored)
+            if (!opened.requiresMigration) return@forEach
+            val secret = normalizeConferenceE2eeSecret(opened.value)
+            editor.putString(key, secretCipher.seal(secret))
+            changed = true
+        }
+        if (changed) check(editor.commit()) { "failed to migrate conference E2EE secrets" }
+    }
+
+    private fun storageKey(host: String, port: Int?, room: String, roomInstance: String): String {
+        require(isValidRoomInstance(roomInstance)) { "invalid room instance" }
+        return hashedStorageKey(host, port, room, roomInstance.trim())
+    }
+
+    private fun legacyStorageKey(host: String, port: Int?, room: String): String =
+        hashedStorageKey(host, port, room, null)
+
+    private fun hashedStorageKey(host: String, port: Int?, room: String, roomInstance: String?): String {
         val rawAuthority = host.trim()
             .removePrefix("https://")
             .removePrefix("http://")
@@ -115,7 +198,10 @@ internal class ConferenceE2eeSecretStore(context: Context) {
         val canonicalHost = endpoint.host?.trim()?.lowercase().orEmpty()
         require(canonicalHost.isNotBlank()) { "invalid relay host" }
         val canonicalPort = port ?: endpoint.port.takeIf { it > 0 } ?: DEFAULT_RELAY_HTTP_PORT
-        val canonical = "$canonicalHost:$canonicalPort|${room.trim()}"
+        val canonical = buildString {
+            append(canonicalHost).append(':').append(canonicalPort).append('|').append(room.trim())
+            if (roomInstance != null) append('|').append(roomInstance)
+        }
         return MessageDigest.getInstance("SHA-256")
             .digest(canonical.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
@@ -136,9 +222,6 @@ internal fun requiredFrameCryptoOptions(): CryptoOptions = CryptoOptions.builder
 
 internal fun CallRuntime.configureConferenceE2ee(rawSecret: String) {
     disposeConferenceE2ee()
-    val secret = normalizeConferenceE2eeSecret(rawSecret)
-    val keyMaterial = decodeConferenceE2eeSecret(secret)
-
     val provider = FrameCryptorFactory.createFrameCryptorKeyProvider(
         true,
         E2EE_RATCHET_SALT,
@@ -149,8 +232,18 @@ internal fun CallRuntime.configureConferenceE2ee(rawSecret: String) {
         true,
         FrameCryptorKeyDerivationAlgorithm.PBKDF2
     )
-    check(provider.setSharedKey(CONFERENCE_E2EE_KEY_INDEX, keyMaterial)) {
-        "WebRTC rejected the conference E2EE key"
+    try {
+        val keyMaterial = decodeConferenceE2eeSecret(rawSecret)
+        try {
+            check(provider.setSharedKey(CONFERENCE_E2EE_KEY_INDEX, keyMaterial)) {
+                "WebRTC rejected the conference E2EE key"
+            }
+        } finally {
+            keyMaterial.fill(0)
+        }
+    } catch (error: Throwable) {
+        provider.dispose()
+        throw error
     }
 
     conferenceE2eeKeyProvider = provider

@@ -21,6 +21,7 @@ import java.util.Locale
 internal fun CallRuntime.connect(
     url: String,
     room: String,
+    roomInstance: String,
     username: String,
     tlsPin: String,
     modKey: String = "",
@@ -67,6 +68,10 @@ internal fun CallRuntime.connect(
     }
 
     val cleanModKey = modKey.trim()
+    if (!isValidRoomInstance(roomInstance)) {
+        setStatus("Invalid room invitation")
+        return
+    }
     try {
         configureConferenceE2ee(cleanE2eeSecret)
     } catch (error: Throwable) {
@@ -81,10 +86,12 @@ internal fun CallRuntime.connect(
     selfHandRaised = false
     syncModerationStateToUi()
 
-    val wsUrl = "wss://$host${if (port == 443) "" else ":$port"}/ws"
+    val wsHost = if (':' in host) "[$host]" else host
+    val wsUrl = "wss://$wsHost${if (port == 443) "" else ":$port"}/ws"
 
-    lastWsUrl = if (port == 443) host else "$host:$port"
+    lastWsUrl = if (port == 443) wsHost else "$wsHost:$port"
     lastRoom = room
+    lastRoomInstance = roomInstance
     lastUsername = username
     lastTlsPin = pin
     lastModKey = cleanModKey
@@ -115,10 +122,12 @@ internal fun CallRuntime.connect(
                 sendWS(JSONObject().apply {
                     put("type", "join")
                     put("room", room)
+                    put("roomInstance", roomInstance)
+                    put("clientVersion", APP_VERSION)
                     put("clientId", stableClientId)
                     if (reconnectToken.isNotBlank()) put("reconnectToken", reconnectToken)
                     if (selfUsername.isNotBlank()) put("username", selfUsername)
-                    if (cleanModKey.isNotBlank()) put("modKey", cleanModKey)
+                    if (lastModKey.isNotBlank()) put("modKey", lastModKey)
                 })
             }
         }
@@ -230,12 +239,15 @@ internal fun CallRuntime.handleSignalingMessage(text: String) {
             "join" -> handleJoinAccepted(msg)
             "lobby-wait" -> handleLobbyWait(msg)
             "lobby-state" -> handleLobbyState(msg)
+            "lobby-peer-added" -> handleLobbyPeerChanged(msg, removed = false)
+            "lobby-peer-updated" -> handleLobbyPeerChanged(msg, removed = false)
+            "lobby-peer-removed" -> handleLobbyPeerChanged(msg, removed = true)
             "lobby-approve" -> handleLobbyApproved(msg)
             "lobby-reject" -> handleLobbyRejected(msg)
             "kick" -> handleKicked(msg)
             "room-closed" -> {
-                val reason = msg.optString("reason").ifBlank { "Комната закрыта" }
-                Toast.makeText(appContext, tr(reason), Toast.LENGTH_SHORT).show()
+                val reason = msg.optString("reason").ifBlank { tr(TextId.ROOM_CLOSED) }
+                Toast.makeText(appContext, trExternal(reason), Toast.LENGTH_SHORT).show()
                 diagLog("Room closed by server", reason)
                 intentionalDisconnect = true
                 teardown()
@@ -317,8 +329,24 @@ internal fun CallRuntime.handleSignalingMessage(text: String) {
             }
             "error" -> {
                 val err = msg.optString("error")
-                setStatus("server error")
-                diagnosticError(TAG, "Server error: $err")
+                if (msg.optString("code") == "client-version-mismatch") {
+                    val requiredVersion = msg.optString("requiredVersion")
+                        .trim()
+                        .takeIf(::isCanonicalVersion)
+                    val versionError = if (requiredVersion != null) {
+                        tr(TextId.REQUIRED_CLIENT_VERSION, requiredVersion)
+                    } else {
+                        tr(TextId.THE_SERVER_REJECTED_THE_CONNECTION_BECAUSE_THE_CLIENT_VERSION_IS_INCOMPA)
+                    }
+                    diagnosticError(TAG, "Server rejected client version: required=$requiredVersion current=$APP_VERSION")
+                    intentionalDisconnect = true
+                    teardown()
+                    setStatus(versionError)
+                    Toast.makeText(appContext, versionError, Toast.LENGTH_LONG).show()
+                } else {
+                    setStatus("server error")
+                    diagnosticError(TAG, "Server error: $err")
+                }
             }
             "answer", "offer", "renegotiate" -> {
                 diagnosticWarning(TAG, "Ignoring legacy signaling message: ${msg.optString("type")}")
@@ -350,11 +378,14 @@ internal fun CallRuntime.handleLobbyWait(msg: JSONObject) {
     setConnected(false)
     setStatus("waiting for moderator")
     postUi {
+        uiStateBinder?.onRelayConnectionAuthenticated()
         uiStateBinder?.setRole(ROLE_GUEST)
         uiStateBinder?.setLobbyWaiting(true)
         uiStateBinder?.setMuteAll(msg.optBoolean("muteAll", false))
         val peers = parseLobbyPeers(msg.optJSONArray("pending"))
         pendingLobbyPeersUiState = peers
+        pendingLobbyRevision = msg.optLong("revision", 0L)
+        lobbyResyncRequested = false
         uiStateBinder?.updateLobbyPending(peers)
     }
     diagLog("Lobby wait", "room=${msg.optString("room")} peerId=${msg.optString("peerId")}")
@@ -365,7 +396,39 @@ internal fun CallRuntime.handleLobbyState(msg: JSONObject) {
         uiStateBinder?.setMuteAll(msg.optBoolean("muteAll", false))
         val peers = parseLobbyPeers(msg.optJSONArray("pending"))
         pendingLobbyPeersUiState = peers
+        pendingLobbyRevision = msg.optLong("revision", pendingLobbyRevision)
+        lobbyResyncRequested = false
         uiStateBinder?.updateLobbyPending(peers)
+    }
+}
+
+internal fun CallRuntime.handleLobbyPeerChanged(msg: JSONObject, removed: Boolean) {
+    val peerId = msg.optString("peerId").trim()
+    if (peerId.isBlank()) return
+    val revision = msg.optLong("revision", 0L)
+    postUi {
+        if (revision > 0L && revision <= pendingLobbyRevision) return@postUi
+        if (revision > 0L && pendingLobbyRevision > 0L && revision != pendingLobbyRevision + 1L) {
+            if (!lobbyResyncRequested) {
+                lobbyResyncRequested = true
+                sendLobbyResync()
+            }
+            return@postUi
+        }
+
+        val peers = pendingLobbyPeersUiState.toMutableList()
+        peers.removeAll { it.peerId == peerId }
+        if (!removed) {
+            peers += LobbyPeerStatus(
+                peerId = peerId,
+                username = msg.optString("username"),
+                joinedAt = msg.optLong("joinedAt", 0L)
+            )
+        }
+        val updated = peers.sortedWith(compareBy<LobbyPeerStatus> { it.joinedAt }.thenBy { it.peerId })
+        pendingLobbyPeersUiState = updated
+        if (revision > 0L) pendingLobbyRevision = revision
+        uiStateBinder?.updateLobbyPending(updated)
     }
 }
 
@@ -378,15 +441,15 @@ internal fun CallRuntime.handleLobbyApproved(msg: JSONObject) {
 }
 
 internal fun CallRuntime.handleLobbyRejected(msg: JSONObject) {
-    val reason = msg.optString("reason").ifBlank { "Отклонено модератором" }
-    Toast.makeText(appContext, tr(reason), Toast.LENGTH_SHORT).show()
+    val reason = msg.optString("reason").ifBlank { tr(TextId.REJECTED_BY_MODERATOR) }
+    Toast.makeText(appContext, trExternal(reason), Toast.LENGTH_SHORT).show()
     diagLog("Lobby rejected", reason)
     disconnect()
 }
 
 internal fun CallRuntime.handleKicked(msg: JSONObject) {
-    val reason = msg.optString("reason").ifBlank { "Удалено модератором" }
-    Toast.makeText(appContext, tr(reason), Toast.LENGTH_SHORT).show()
+    val reason = msg.optString("reason").ifBlank { tr(TextId.KICKED_BY_MODERATOR) }
+    Toast.makeText(appContext, trExternal(reason), Toast.LENGTH_SHORT).show()
     diagLog("Kicked", reason)
     disconnect()
 }
@@ -561,13 +624,13 @@ internal fun CallRuntime.applyForcedMuteFromServer(enabled: Boolean, reason: Str
         runCatching { localAudioTrack?.setEnabled(false) }
         setMicUi()
         sendSelfMediaState(audioEnabled = false)
-        Toast.makeText(appContext, tr("Микрофон выключен модератором"), Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, tr(TextId.MICROPHONE_MUTED_BY_MODERATOR), Toast.LENGTH_SHORT).show()
     } else {
         postUi { uiStateBinder?.setForcedMute(false) }
         runCatching { localAudioTrack?.setEnabled(micEnabledState) }
 
         if (changed) {
-            Toast.makeText(appContext, tr("Модератор разрешил включить микрофон"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(appContext, tr(TextId.THE_MODERATOR_ALLOWED_YOU_TO_UNMUTE), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -588,6 +651,7 @@ internal fun CallRuntime.handleJoinAccepted(msg: JSONObject) {
     selfHandRaised = msg.optBoolean("handRaised", false)
 
     postUi {
+        uiStateBinder?.onRelayConnectionAuthenticated()
         uiStateBinder?.setRole(localRole)
         uiStateBinder?.setLobbyWaiting(false)
         uiStateBinder?.setMuteAll(msg.optBoolean("muteAll", false))
@@ -595,6 +659,8 @@ internal fun CallRuntime.handleJoinAccepted(msg: JSONObject) {
         uiStateBinder?.setPeerHandRaised(id, selfHandRaised)
         val peers = parseLobbyPeers(msg.optJSONArray("pending"))
         pendingLobbyPeersUiState = peers
+        pendingLobbyRevision = msg.optLong("revision", 0L)
+        lobbyResyncRequested = false
         uiStateBinder?.updateLobbyPending(peers)
     }
 
@@ -647,6 +713,13 @@ internal fun CallRuntime.sendModeratorTargetCommand(type: String, peerId: String
     sendWS(JSONObject().apply {
         put("type", type)
         put("targetPeerId", id)
+        if (lastModKey.isNotBlank()) put("modKey", lastModKey)
+    })
+}
+
+internal fun CallRuntime.sendLobbyResync() {
+    sendWS(JSONObject().apply {
+        put("type", "lobby-resync")
         if (lastModKey.isNotBlank()) put("modKey", lastModKey)
     })
 }

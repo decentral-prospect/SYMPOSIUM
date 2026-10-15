@@ -47,7 +47,7 @@ internal interface CallPermissionRequester {
 }
 
 interface CallForegroundController {
-    fun startForegroundForCall(microphone: Boolean)
+    fun startForegroundForCall(microphone: Boolean, camera: Boolean)
     fun stopForegroundForCall()
 }
 
@@ -61,7 +61,6 @@ internal class CallRuntime(
     internal var pendingStartCallServiceAfterMicPermission = false
 
     internal var telemetryEnabledState by mutableStateOf(false)
-    internal var telemetryPromptShownState by mutableStateOf(false)
     internal var eglBase: EglBase? = null
     internal var pcFactory: PeerConnectionFactory? = null
     internal var publishPeerConnection: PeerConnection? = null
@@ -116,6 +115,8 @@ internal class CallRuntime(
     internal var pcUiState = "—"
     internal var cameraDebugUiState = "camera: idle"
     internal var pendingLobbyPeersUiState: List<LobbyPeerStatus> = emptyList()
+    internal var pendingLobbyRevision: Long = 0L
+    internal var lobbyResyncRequested = false
 
     internal var selfUsername: String = ""
     internal var micEnabledState = false
@@ -199,6 +200,7 @@ internal class CallRuntime(
 
     internal var lastWsUrl: String = ""
     internal var lastRoom: String = ""
+    internal var lastRoomInstance: String = ""
     internal var lastUsername: String = ""
     internal var lastTlsPin: String = ""
     internal var lastModKey: String = ""
@@ -282,6 +284,9 @@ internal class CallRuntime(
         binder.setOutput(outputEnabled)
         binder.setSpeaker(speakerphoneOn)
         binder.setCameraDebug(cameraDebugUiState)
+        if (joinedRoom || lobbyWaiting) {
+            binder.onRelayConnectionAuthenticated()
+        }
         binder.updateLobbyPending(pendingLobbyPeersUiState)
         publishAudioRouteToUi()
         syncModerationStateToUi()
@@ -304,8 +309,11 @@ internal class CallRuntime(
         }
     }
 
-    internal fun startCallService(microphone: Boolean = false) {
-        foregroundController.startForegroundForCall(microphone)
+    internal fun startCallService(
+        microphone: Boolean = false,
+        camera: Boolean = videoEnabledState
+    ) {
+        foregroundController.startForegroundForCall(microphone, camera)
     }
 
     internal fun stopCallService() {

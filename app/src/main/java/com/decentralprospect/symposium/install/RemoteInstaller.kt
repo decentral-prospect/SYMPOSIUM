@@ -1,9 +1,20 @@
 package com.decentralprospect.symposium
 
 import android.content.Context
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.hierynomus.sshj.key.KeyAlgorithm
+import com.hierynomus.sshj.key.KeyAlgorithms
+import com.hierynomus.sshj.transport.cipher.BlockCiphers
+import com.hierynomus.sshj.transport.cipher.ChachaPolyCiphers
+import com.hierynomus.sshj.transport.cipher.GcmCiphers
+import com.hierynomus.sshj.transport.kex.DHGroups
+import com.hierynomus.sshj.transport.kex.ExtInfoClientFactory
+import com.hierynomus.sshj.transport.mac.Macs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -13,11 +24,16 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import net.schmizz.sshj.DefaultSecurityProviderConfig
 import net.schmizz.sshj.SSHClient
+import net.schmizz.sshj.common.Factory
 import net.schmizz.sshj.sftp.OpenMode
 import net.schmizz.sshj.transport.TransportException
-import net.schmizz.sshj.transport.kex.DHG14
+import net.schmizz.sshj.transport.cipher.Cipher as SshCipher
+import net.schmizz.sshj.transport.kex.Curve25519SHA256
 import net.schmizz.sshj.transport.kex.DHGexSHA256
+import net.schmizz.sshj.transport.kex.DHGroupData
 import net.schmizz.sshj.transport.kex.ECDHNistP
+import net.schmizz.sshj.transport.kex.KeyExchange
+import net.schmizz.sshj.transport.mac.MAC
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.userauth.UserAuthException
 import okhttp3.OkHttpClient
@@ -30,22 +46,162 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.security.AlgorithmParameters
+import java.security.AlgorithmParametersSpi
+import java.security.Key
+import java.security.KeyFactory
+import java.security.KeyFactorySpi
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.PrivateKey
 import java.security.PublicKey
+import java.security.Provider
 import java.security.SecureRandom
+import java.security.Security
+import java.security.Signature
 import java.security.cert.CertificateException
-import java.security.cert.X509Certificate
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.math.BigInteger
+import java.security.interfaces.RSAPublicKey
+import java.security.interfaces.ECPublicKey
+import java.security.spec.AlgorithmParameterSpec
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECParameterSpec
+import java.security.spec.InvalidParameterSpecException
+import java.security.spec.KeySpec
 import java.util.EnumSet
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.KeyAgreement
+import javax.crypto.spec.DHParameterSpec
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 data class OpenRoomInfo(
     val name: String,
-    val moderatorKey: String = ""
+    val roomInstance: String = "",
+    val moderatorKey: String = "",
+    val moderatorKeyAvailable: Boolean = moderatorKey.isNotBlank(),
+    val requiredVersion: String = "",
+    val muteAllByDefault: Boolean = false,
+    val admitWithoutApproval: Boolean = false
 )
+
+enum class RelayCapacityPreset(val speakers: Int, val listeners: Int) {
+    STANDARD(5, 50),
+    SPEAKERS_10(10, 100),
+    SPEAKERS_15(15, 250),
+    SPEAKERS_25(25, 700),
+    CUSTOM(0, 0)
+}
+
+internal fun relayCapacityPresetFromStoredName(name: String): RelayCapacityPreset = when (name) {
+    "RAM_4_GB" -> RelayCapacityPreset.SPEAKERS_10
+    "CPU_2_RAM_8_GB" -> RelayCapacityPreset.SPEAKERS_15
+    "CPU_4_RAM_16_GB" -> RelayCapacityPreset.SPEAKERS_25
+    else -> RelayCapacityPreset.entries.firstOrNull { it.name == name } ?: RelayCapacityPreset.CUSTOM
+}
+
+data class RelayCapacityConfig(
+    val preset: RelayCapacityPreset,
+    val maxActivePeers: Int,
+    val maxPendingLobbyPeers: Int,
+    val pendingIceCandidatesPerPeer: Int,
+    val pendingIceBytesPerPeer: Long,
+    val pendingIceBytesTotal: Long,
+    val joinRatePerMinute: Int,
+    val maxConcurrentJoins: Int,
+    val maxPreJoinConnections: Int = 512,
+    val maxPreJoinConnectionsPerIp: Int = 32,
+    val preJoinTimeoutSeconds: Int = 15
+) {
+    fun validationError(): TextId? {
+        if (maxActivePeers !in 1..100_000) return TextId.ACTIVE_PEERS_RANGE
+        if (maxPendingLobbyPeers !in 1..100_000) return TextId.LOBBY_PEERS_RANGE
+        if (maxPendingLobbyPeers == maxActivePeers) {
+            return TextId.LOBBY_LIMIT_MUST_DIFFER
+        }
+        if (pendingIceCandidatesPerPeer !in 1..4_096) return TextId.ICE_CANDIDATE_RANGE
+        if (pendingIceBytesPerPeer !in 4_096L..64L * 1024 * 1024) {
+            return TextId.ICE_MEMORY_PER_PEER_RANGE
+        }
+        if (pendingIceBytesTotal !in 4_096L..64L * 1024 * 1024 * 1024) {
+            return TextId.ICE_TOTAL_MEMORY_RANGE
+        }
+        if (pendingIceBytesTotal < pendingIceBytesPerPeer) {
+            return TextId.ICE_TOTAL_BELOW_PER_PEER
+        }
+        if (joinRatePerMinute !in 1..10_000) return TextId.JOIN_RATE_RANGE
+        if (maxConcurrentJoins !in 1..10_000) return TextId.CONCURRENT_JOINS_RANGE
+        if (maxPreJoinConnections !in 1..100_000) return TextId.INVALID_RELAY_CAPACITY
+        if (maxPreJoinConnectionsPerIp !in 1..maxPreJoinConnections) return TextId.INVALID_RELAY_CAPACITY
+        if (preJoinTimeoutSeconds !in 1..300) return TextId.INVALID_RELAY_CAPACITY
+        return null
+    }
+
+    companion object {
+        fun forPreset(preset: RelayCapacityPreset): RelayCapacityConfig = when (preset) {
+            RelayCapacityPreset.STANDARD -> RelayCapacityConfig(
+                preset = preset,
+                maxActivePeers = 100,
+                maxPendingLobbyPeers = 200,
+                pendingIceCandidatesPerPeer = 64,
+                pendingIceBytesPerPeer = 256L * 1024,
+                pendingIceBytesTotal = 16L * 1024 * 1024,
+                joinRatePerMinute = 12,
+                maxConcurrentJoins = 16,
+                maxPreJoinConnections = 256
+            )
+            RelayCapacityPreset.SPEAKERS_10 -> RelayCapacityConfig(
+                preset = preset,
+                maxActivePeers = 200,
+                maxPendingLobbyPeers = 400,
+                pendingIceCandidatesPerPeer = 64,
+                pendingIceBytesPerPeer = 256L * 1024,
+                pendingIceBytesTotal = 32L * 1024 * 1024,
+                joinRatePerMinute = 12,
+                maxConcurrentJoins = 32,
+                maxPreJoinConnections = 512
+            )
+            RelayCapacityPreset.SPEAKERS_15 -> RelayCapacityConfig(
+                preset = preset,
+                maxActivePeers = 400,
+                maxPendingLobbyPeers = 800,
+                pendingIceCandidatesPerPeer = 64,
+                pendingIceBytesPerPeer = 256L * 1024,
+                pendingIceBytesTotal = 64L * 1024 * 1024,
+                joinRatePerMinute = 12,
+                maxConcurrentJoins = 64,
+                maxPreJoinConnections = 1_024
+            )
+            RelayCapacityPreset.SPEAKERS_25 -> RelayCapacityConfig(
+                preset = preset,
+                maxActivePeers = 1_000,
+                maxPendingLobbyPeers = 2_000,
+                pendingIceCandidatesPerPeer = 64,
+                pendingIceBytesPerPeer = 256L * 1024,
+                pendingIceBytesTotal = 128L * 1024 * 1024,
+                joinRatePerMinute = 12,
+                maxConcurrentJoins = 128,
+                maxPreJoinConnections = 2_048
+            )
+            RelayCapacityPreset.CUSTOM -> forPreset(RelayCapacityPreset.STANDARD).copy(preset = preset)
+        }
+    }
+}
+
+internal fun relayDurationSeconds(seconds: Int): String = "${seconds}s"
+
+internal fun relayIceUdpPortRange(currentRange: IntRange, capacity: RelayCapacityConfig): IntRange {
+    require(currentRange.first in 1..65_535 && currentRange.last in currentRange.first..65_535)
+    val requiredPorts = ((capacity.maxActivePeers + capacity.maxConcurrentJoins) * 4).coerceIn(512, 32_768)
+    if (currentRange.last - currentRange.first + 1 >= requiredPorts) return currentRange
+    val first = minOf(currentRange.first, 65_536 - requiredPorts)
+    return first until first + requiredPorts
+}
 
 data class DeploymentProfile(
     val appDir: String,
@@ -70,22 +226,115 @@ data class DeploymentProfile(
     val iceUdpPortMax: Int,
     val firewallTag: String,
     val stagingDir: String,
-    val adminToken: String
+    val adminToken: String,
+    val relayCapacity: RelayCapacityConfig = RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD)
 )
+
+private fun relayCapacityToJson(config: RelayCapacityConfig): JSONObject = JSONObject()
+    .put("preset", config.preset.name)
+    .put("maxActivePeers", config.maxActivePeers)
+    .put("maxPendingLobbyPeers", config.maxPendingLobbyPeers)
+    .put("pendingIceCandidatesPerPeer", config.pendingIceCandidatesPerPeer)
+    .put("pendingIceBytesPerPeer", config.pendingIceBytesPerPeer)
+    .put("pendingIceBytesTotal", config.pendingIceBytesTotal)
+    .put("joinRatePerMinute", config.joinRatePerMinute)
+    .put("maxConcurrentJoins", config.maxConcurrentJoins)
+    .put("maxPreJoinConnections", config.maxPreJoinConnections)
+    .put("maxPreJoinConnectionsPerIp", config.maxPreJoinConnectionsPerIp)
+    .put("preJoinTimeoutSeconds", config.preJoinTimeoutSeconds)
+
+private fun relayCapacityFromJson(value: JSONObject?): RelayCapacityConfig {
+    val defaults = RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD)
+    if (value == null) return defaults
+    val preset = relayCapacityPresetFromStoredName(value.optString("preset"))
+    val parsed = RelayCapacityConfig(
+        preset = preset,
+        maxActivePeers = value.optInt("maxActivePeers", defaults.maxActivePeers),
+        maxPendingLobbyPeers = value.optInt("maxPendingLobbyPeers", defaults.maxPendingLobbyPeers),
+        pendingIceCandidatesPerPeer = value.optInt(
+            "pendingIceCandidatesPerPeer",
+            defaults.pendingIceCandidatesPerPeer
+        ),
+        pendingIceBytesPerPeer = value.optLong("pendingIceBytesPerPeer", defaults.pendingIceBytesPerPeer),
+        pendingIceBytesTotal = value.optLong("pendingIceBytesTotal", defaults.pendingIceBytesTotal),
+        joinRatePerMinute = value.optInt("joinRatePerMinute", defaults.joinRatePerMinute),
+        maxConcurrentJoins = value.optInt("maxConcurrentJoins", defaults.maxConcurrentJoins),
+        maxPreJoinConnections = value.optInt("maxPreJoinConnections", defaults.maxPreJoinConnections),
+        maxPreJoinConnectionsPerIp = value.optInt(
+            "maxPreJoinConnectionsPerIp",
+            defaults.maxPreJoinConnectionsPerIp
+        ),
+        preJoinTimeoutSeconds = value.optInt("preJoinTimeoutSeconds", defaults.preJoinTimeoutSeconds)
+    ).takeIf { it.validationError() == null } ?: defaults
+    return normalizeRelayCapacityConfig(parsed)
+}
+
+internal fun normalizeRelayCapacityConfig(config: RelayCapacityConfig): RelayCapacityConfig {
+    val presets = listOf(
+        RelayCapacityPreset.STANDARD,
+        RelayCapacityPreset.SPEAKERS_10,
+        RelayCapacityPreset.SPEAKERS_15,
+        RelayCapacityPreset.SPEAKERS_25
+    )
+    val currentMatch = presets.firstOrNull { preset ->
+        config.copy(preset = preset) == RelayCapacityConfig.forPreset(preset)
+    }
+    if (currentMatch != null) return config.copy(preset = currentMatch)
+
+    val legacyMatch = presets.firstOrNull { preset ->
+        config.copy(preset = preset) in legacyRelayCapacityConfigs(preset)
+    }
+    if (legacyMatch != null) return RelayCapacityConfig.forPreset(legacyMatch)
+
+    return if (config.preset == RelayCapacityPreset.CUSTOM) {
+        config
+    } else {
+        RelayCapacityConfig.forPreset(config.preset)
+    }
+}
+
+private fun legacyRelayCapacityConfigs(preset: RelayCapacityPreset): List<RelayCapacityConfig> {
+    val index = when (preset) {
+        RelayCapacityPreset.STANDARD -> 0
+        RelayCapacityPreset.SPEAKERS_10 -> 1
+        RelayCapacityPreset.SPEAKERS_15 -> 2
+        RelayCapacityPreset.SPEAKERS_25 -> 3
+        RelayCapacityPreset.CUSTOM -> return emptyList()
+    }
+    val previous = RelayCapacityConfig(
+        preset = preset,
+        maxActivePeers = listOf(250, 500, 1_000, 2_000)[index],
+        maxPendingLobbyPeers = listOf(500, 1_000, 2_000, 4_000)[index],
+        pendingIceCandidatesPerPeer = 64,
+        pendingIceBytesPerPeer = 256L * 1024,
+        pendingIceBytesTotal = (16L shl index) * 1024 * 1024,
+        joinRatePerMinute = 12,
+        maxConcurrentJoins = listOf(16, 16, 32, 64)[index]
+    )
+    return listOf(previous, previous.copy(
+        maxActivePeers = listOf(100, 250, 500, 1_000)[index],
+        maxPendingLobbyPeers = listOf(250, 500, 1_000, 2_000)[index]
+    ))
+}
 
 internal data class RelayReleaseMetadata(
     val version: String,
     val downloadUrl: String,
-    val sha256: String
+    val sha256: String,
+    val bundledSha256: String = sha256
 )
 
 internal fun configuredRelayRelease(): RelayReleaseMetadata = RelayReleaseMetadata(
     version = BuildConfig.RELAY_RELEASE_VERSION,
     downloadUrl = BuildConfig.RELAY_BINARY_URL,
-    sha256 = BuildConfig.RELAY_BINARY_SHA256
+    sha256 = BuildConfig.RELAY_BINARY_SHA256,
+    bundledSha256 = BuildConfig.RELAY_BUNDLED_SHA256
 )
 
-private fun deploymentProfileToJson(profile: DeploymentProfile): JSONObject = JSONObject()
+private fun deploymentProfileToJson(
+    profile: DeploymentProfile,
+    includeAdminToken: Boolean = true
+): JSONObject = JSONObject()
     .put("appDir", profile.appDir)
     .put("serviceName", profile.serviceName)
     .put("instanceName", profile.instanceName)
@@ -108,7 +357,8 @@ private fun deploymentProfileToJson(profile: DeploymentProfile): JSONObject = JS
     .put("iceUdpPortMax", profile.iceUdpPortMax)
     .put("firewallTag", profile.firewallTag)
     .put("stagingDir", profile.stagingDir)
-    .put("adminToken", profile.adminToken)
+    .apply { if (includeAdminToken) put("adminToken", profile.adminToken) }
+    .put("relayCapacity", relayCapacityToJson(profile.relayCapacity))
 
 private fun deploymentProfileFromJson(value: JSONObject?): DeploymentProfile? {
     if (value == null) return null
@@ -136,12 +386,13 @@ private fun deploymentProfileFromJson(value: JSONObject?): DeploymentProfile? {
             iceUdpPortMax = value.getInt("iceUdpPortMax"),
             firewallTag = value.getString("firewallTag"),
             stagingDir = value.getString("stagingDir"),
-            adminToken = value.getString("adminToken")
+            adminToken = value.getString("adminToken"),
+            relayCapacity = relayCapacityFromJson(value.optJSONObject("relayCapacity"))
         )
     }.getOrNull()
 }
 
-private fun parseOpenRoomsJson(raw: String): List<OpenRoomInfo> {
+internal fun parseOpenRoomsJson(raw: String): List<OpenRoomInfo> {
     val trimmed = raw.trim()
     if (trimmed.isBlank()) return emptyList()
 
@@ -153,7 +404,10 @@ private fun parseOpenRoomsJson(raw: String): List<OpenRoomInfo> {
     }
 }
 
-private fun parseOpenRoomsArray(arr: JSONArray): List<OpenRoomInfo> {
+private fun parseOpenRoomsArray(
+    arr: JSONArray,
+    requireRoomInstance: Boolean = true
+): List<OpenRoomInfo> {
     val out = ArrayList<OpenRoomInfo>(arr.length())
 
     for (i in 0 until arr.length()) {
@@ -163,17 +417,40 @@ private fun parseOpenRoomsArray(arr: JSONArray): List<OpenRoomInfo> {
                     .ifBlank { item.optString("name") }
                     .trim()
 
+                val roomInstance = item.optString("roomInstance").trim()
+
                 val moderatorKey = item.optString("moderator_key")
                     .ifBlank { item.optString("moderatorKey") }
                     .trim()
 
+                val requiredVersion = item.optString("requiredVersion")
+                    .trim()
+                    .takeIf(::isCanonicalVersion)
+                    .orEmpty()
+
+                require(isValidRelayRoomName(name)) { "invalid room name" }
+                require(
+                    isValidRoomInstance(roomInstance) || (!requireRoomInstance && roomInstance.isBlank())
+                ) { "invalid room instance" }
                 if (name.isNotBlank()) {
-                    out += OpenRoomInfo(name = name, moderatorKey = moderatorKey)
+                    out += OpenRoomInfo(
+                        name = name,
+                        roomInstance = roomInstance,
+                        moderatorKey = moderatorKey,
+                        moderatorKeyAvailable = item.optBoolean(
+                            "moderatorKeyAvailable",
+                            moderatorKey.isNotBlank()
+                        ),
+                        requiredVersion = requiredVersion,
+                        muteAllByDefault = item.optBoolean("muteAllByDefault", false),
+                        admitWithoutApproval = item.optBoolean("admitWithoutApproval", false)
+                    )
                 }
             }
 
             is String -> {
                 val name = item.trim()
+                require(isValidRelayRoomName(name)) { "invalid room name" }
                 if (name.isNotBlank()) {
                     out += OpenRoomInfo(name = name)
                 }
@@ -181,6 +458,7 @@ private fun parseOpenRoomsArray(arr: JSONArray): List<OpenRoomInfo> {
 
             else -> {
                 val name = arr.optString(i).trim()
+                require(name == "null" || isValidRelayRoomName(name)) { "invalid room name" }
                 if (name.isNotBlank() && name != "null") {
                     out += OpenRoomInfo(name = name)
                 }
@@ -191,19 +469,384 @@ private fun parseOpenRoomsArray(arr: JSONArray): List<OpenRoomInfo> {
     return out
 }
 
-private fun openRoomsToJsonArray(rooms: List<OpenRoomInfo>): JSONArray {
+private fun isValidRelayRoomName(value: String): Boolean =
+    value.isNotBlank() && value.length <= 128 && value.none(Char::isISOControl)
+
+internal fun isValidRoomInstance(value: String): Boolean =
+    value.isNotBlank() && value.length <= 64 && value.all {
+        it.isLetterOrDigit() || it == '-' || it == '_'
+    }
+
+private fun openRoomsToJsonArray(
+    rooms: List<OpenRoomInfo>,
+    includeModeratorKeys: Boolean = true
+): JSONArray {
     val arr = JSONArray()
     rooms.forEach { room ->
         arr.put(
             JSONObject()
                 .put("room", room.name)
-                .put("moderator_key", room.moderatorKey)
+                .put("roomInstance", room.roomInstance)
+                .apply {
+                    if (includeModeratorKeys) put("moderator_key", room.moderatorKey)
+                }
+                .put("moderatorKeyAvailable", room.moderatorKeyAvailable || room.moderatorKey.isNotBlank())
+                .put("requiredVersion", room.requiredVersion)
+                .put("muteAllByDefault", room.muteAllByDefault)
+                .put("admitWithoutApproval", room.admitWithoutApproval)
         )
     }
     return arr
 }
 
+/**
+ * SSHJ asks JCA for "ECDSA", while some Android crypto providers expose the same key factory
+ * under "EC" only. Some providers also omit AlgorithmParameters("EC") even though their EC key
+ * generator and ECDH implementation work. Repair only the missing aliases/primitives and leave
+ * every working platform implementation untouched.
+ */
+internal fun enableAndroidEcdsaCompatibility(): Boolean {
+    val parametersMissing = runCatching { AlgorithmParameters.getInstance("EC") }.isFailure
+    val ecdsaFactoryMissing = runCatching { KeyFactory.getInstance("ECDSA") }.isFailure
+    if (parametersMissing || ecdsaFactoryMissing) {
+        val providerInstalled = runCatching {
+            synchronized(Security::class.java) {
+                if (Security.getProvider(AndroidEcProvider.NAME) == null) {
+                    Security.addProvider(AndroidEcProvider())
+                }
+            }
+        }.isSuccess
+        if (!providerInstalled) return false
+    }
+    return runCatching {
+        AlgorithmParameters.getInstance("EC")
+        KeyFactory.getInstance("ECDSA")
+    }.isSuccess
+}
+
+@Suppress("DEPRECATION")
+private class AndroidEcProvider : Provider(
+    NAME,
+    1.0,
+    "EC AlgorithmParameters compatibility bridge for Android"
+) {
+    init {
+        put("AlgorithmParameters.EC", AndroidEcAlgorithmParameters::class.java.name)
+        put("KeyFactory.ECDSA", AndroidEcdsaKeyFactory::class.java.name)
+    }
+
+    companion object {
+        const val NAME = "SymposiumAndroidEC"
+    }
+}
+
+class AndroidEcdsaKeyFactory : KeyFactorySpi() {
+    private val delegate: KeyFactory by lazy { KeyFactory.getInstance("EC") }
+
+    override fun engineGeneratePublic(keySpec: KeySpec): PublicKey =
+        delegate.generatePublic(keySpec)
+
+    override fun engineGeneratePrivate(keySpec: KeySpec): PrivateKey =
+        delegate.generatePrivate(keySpec)
+
+    override fun <T : KeySpec> engineGetKeySpec(key: Key, keySpec: Class<T>): T =
+        delegate.getKeySpec(key, keySpec)
+
+    override fun engineTranslateKey(key: Key): Key = delegate.translateKey(key)
+}
+
+class AndroidEcAlgorithmParameters : AlgorithmParametersSpi() {
+    private var namedCurve: ECGenParameterSpec? = null
+    private var parameters: ECParameterSpec? = null
+
+    override fun engineInit(paramSpec: AlgorithmParameterSpec) {
+        val curve = paramSpec as? ECGenParameterSpec
+            ?: throw InvalidParameterSpecException("ECGenParameterSpec is required")
+        try {
+            val generator = KeyPairGenerator.getInstance("EC")
+            generator.initialize(curve)
+            val publicKey = generator.generateKeyPair().public as ECPublicKey
+            namedCurve = curve
+            parameters = publicKey.params
+        } catch (error: Exception) {
+            throw InvalidParameterSpecException(error.message).apply { initCause(error) }
+        }
+    }
+
+    override fun engineInit(params: ByteArray) {
+        throw IOException("encoded EC parameters are not supported")
+    }
+
+    override fun engineInit(params: ByteArray, format: String) {
+        throw IOException("encoded EC parameters are not supported")
+    }
+
+    override fun <T : AlgorithmParameterSpec> engineGetParameterSpec(
+        paramSpec: Class<T>
+    ): T {
+        val value: AlgorithmParameterSpec = when {
+            paramSpec.isAssignableFrom(ECParameterSpec::class.java) -> parameters
+            paramSpec.isAssignableFrom(ECGenParameterSpec::class.java) -> namedCurve
+            else -> null
+        } ?: throw InvalidParameterSpecException("EC parameters are not initialized")
+        return paramSpec.cast(value)
+    }
+
+    override fun engineGetEncoded(): ByteArray {
+        throw IOException("encoded EC parameters are not supported")
+    }
+
+    override fun engineGetEncoded(format: String): ByteArray {
+        throw IOException("encoded EC parameters are not supported")
+    }
+
+    override fun engineToString(): String = namedCurve?.name ?: "uninitialized EC parameters"
+}
+
+/**
+ * A capability-based SSH configuration. Android API levels are not a reliable proxy for crypto
+ * support because vendors can replace providers and hardware-backed implementations. Every
+ * advertised primitive below has therefore been initialized successfully in this process.
+ */
+internal class AndroidCompatibleSshConfig : DefaultSecurityProviderConfig() {
+    override fun initKeyExchangeFactories() {
+        val capabilities = androidSshCapabilities
+        val factories = mutableListOf<Factory.Named<KeyExchange>>()
+        if (capabilities.x25519) {
+            factories += Curve25519SHA256.Factory()
+            factories += Curve25519SHA256.FactoryLibSsh()
+        }
+        if ("secp256r1" in capabilities.ecdsaCurves) factories += ECDHNistP.Factory256()
+        if ("secp384r1" in capabilities.ecdsaCurves) factories += ECDHNistP.Factory384()
+        if ("secp521r1" in capabilities.ecdsaCurves) factories += ECDHNistP.Factory521()
+        if (capabilities.dhGroup14) {
+            factories += DHGroups.Group14SHA256()
+            factories += DHGexSHA256.Factory()
+        }
+        check(factories.isNotEmpty()) { "No compatible SSH key exchange is available" }
+        factories += ExtInfoClientFactory()
+        setKeyExchangeFactories(factories)
+    }
+
+    override fun initKeyAlgorithms() {
+        val capabilities = androidSshCapabilities
+        val algorithms = mutableListOf<Factory.Named<KeyAlgorithm>>()
+        if (capabilities.ed25519) {
+            algorithms += KeyAlgorithms.EdDSA25519CertV01()
+            algorithms += KeyAlgorithms.EdDSA25519()
+        }
+        if ("secp521r1" in capabilities.ecdsaCurves) {
+            algorithms += KeyAlgorithms.ECDSASHANistp521CertV01()
+            algorithms += KeyAlgorithms.ECDSASHANistp521()
+        }
+        if ("secp384r1" in capabilities.ecdsaCurves) {
+            algorithms += KeyAlgorithms.ECDSASHANistp384CertV01()
+            algorithms += KeyAlgorithms.ECDSASHANistp384()
+        }
+        if ("secp256r1" in capabilities.ecdsaCurves) {
+            algorithms += KeyAlgorithms.ECDSASHANistp256CertV01()
+            algorithms += KeyAlgorithms.ECDSASHANistp256()
+        }
+        // Android Keystore implementations can advertise SHA-512 RSA support but fail when a
+        // hardware-backed private key performs the actual SSH signature. Prefer SHA-256, which
+        // is supported by modern OpenSSH and is verified against the same Keystore key type.
+        if (capabilities.rsaSha256) algorithms += KeyAlgorithms.RSASHA256()
+        if (capabilities.rsaSha512) algorithms += KeyAlgorithms.RSASHA512()
+        if (capabilities.rsaSha1) {
+            algorithms += KeyAlgorithms.SSHRSACertV01()
+            algorithms += KeyAlgorithms.SSHRSA()
+        }
+        check(algorithms.isNotEmpty()) { "No compatible SSH host key algorithm is available" }
+        setKeyAlgorithms(algorithms)
+    }
+
+    override fun initCipherFactories() {
+        setCipherFactories(androidSshCapabilities.cipherFactories)
+    }
+
+    override fun initMACFactories() {
+        setMACFactories(androidSshCapabilities.macFactories)
+    }
+}
+
+private data class AndroidSshCapabilities(
+    val x25519: Boolean,
+    val ecdsaCurves: Set<String>,
+    val dhGroup14: Boolean,
+    val ed25519: Boolean,
+    val rsaSha512: Boolean,
+    val rsaSha256: Boolean,
+    val rsaSha1: Boolean,
+    val cipherFactories: List<Factory.Named<SshCipher>>,
+    val macFactories: List<Factory.Named<MAC>>
+)
+
+private val androidSshCapabilities: AndroidSshCapabilities by lazy(
+    LazyThreadSafetyMode.SYNCHRONIZED
+) {
+    detectAndroidSshCapabilities()
+}
+
+private fun detectAndroidSshCapabilities(): AndroidSshCapabilities {
+    val ecdsaBridgeAvailable = enableAndroidEcdsaCompatibility()
+    val ecdsaCurves = if (ecdsaBridgeAvailable) {
+        listOf(
+            "secp256r1" to "SHA256withECDSA",
+            "secp384r1" to "SHA384withECDSA",
+            "secp521r1" to "SHA512withECDSA"
+        ).filter { (curve, signature) -> supportsEcSshPrimitive(curve, signature) }
+            .mapTo(linkedSetOf()) { it.first }
+    } else {
+        emptySet()
+    }
+
+    val cipherFactories = usableCipherFactories(
+        listOf(
+            ChachaPolyCiphers.CHACHA_POLY_OPENSSH(),
+            GcmCiphers.AES256GCM(),
+            GcmCiphers.AES128GCM(),
+            BlockCiphers.AES256CTR(),
+            BlockCiphers.AES128CTR(),
+            BlockCiphers.AES256CBC(),
+            BlockCiphers.AES128CBC()
+        )
+    )
+    check(cipherFactories.isNotEmpty()) { "No compatible SSH cipher is available" }
+
+    val macFactories = usableMacFactories(
+        listOf(
+            Macs.HMACSHA2512Etm(),
+            Macs.HMACSHA2256Etm(),
+            Macs.HMACSHA2512(),
+            Macs.HMACSHA2256(),
+            Macs.HMACSHA1Etm(),
+            Macs.HMACSHA1()
+        )
+    )
+    check(macFactories.isNotEmpty()) { "No compatible SSH MAC is available" }
+
+    return AndroidSshCapabilities(
+        x25519 = supportsX25519(),
+        ecdsaCurves = ecdsaCurves,
+        dhGroup14 = supportsDhGroup14(),
+        ed25519 = supportsEd25519(),
+        rsaSha512 = supportsRsaSignature("SHA512withRSA"),
+        rsaSha256 = supportsRsaSignature("SHA256withRSA"),
+        rsaSha1 = supportsRsaSignature("SHA1withRSA"),
+        cipherFactories = cipherFactories,
+        macFactories = macFactories
+    )
+}
+
+private fun supportsEcSshPrimitive(curve: String, signatureAlgorithm: String): Boolean =
+    runCatching {
+        val parameters = AlgorithmParameters.getInstance("EC").apply {
+            init(ECGenParameterSpec(curve))
+        }
+        parameters.getParameterSpec(ECParameterSpec::class.java)
+        KeyFactory.getInstance("ECDSA")
+
+        val pair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec(curve))
+            generateKeyPair()
+        }
+        KeyAgreement.getInstance("ECDH").run {
+            init(pair.private)
+            doPhase(pair.public, true)
+            check(generateSecret().isNotEmpty())
+        }
+        Signature.getInstance(signatureAlgorithm).run {
+            initSign(pair.private)
+            update(SSH_CAPABILITY_TEST_MESSAGE)
+            check(sign().isNotEmpty())
+        }
+    }.isSuccess
+
+private fun supportsX25519(): Boolean = runCatching {
+    KeyFactory.getInstance("X25519")
+    val first = KeyPairGenerator.getInstance("X25519").generateKeyPair()
+    val second = KeyPairGenerator.getInstance("X25519").generateKeyPair()
+    val firstSecret = KeyAgreement.getInstance("X25519").run {
+        init(first.private)
+        doPhase(second.public, true)
+        generateSecret()
+    }
+    val secondSecret = KeyAgreement.getInstance("X25519").run {
+        init(second.private)
+        doPhase(first.public, true)
+        generateSecret()
+    }
+    check(firstSecret.contentEquals(secondSecret))
+}.isSuccess
+
+private fun supportsDhGroup14(): Boolean = runCatching {
+    val parameters = DHParameterSpec(DHGroupData.P14, DHGroupData.G)
+    val first = KeyPairGenerator.getInstance("DH").run {
+        initialize(parameters)
+        generateKeyPair()
+    }
+    val second = KeyPairGenerator.getInstance("DH").run {
+        initialize(parameters)
+        generateKeyPair()
+    }
+    val firstSecret = KeyAgreement.getInstance("DH").run {
+        init(first.private)
+        doPhase(second.public, true)
+        generateSecret()
+    }
+    val secondSecret = KeyAgreement.getInstance("DH").run {
+        init(second.private)
+        doPhase(first.public, true)
+        generateSecret()
+    }
+    check(firstSecret.contentEquals(secondSecret))
+}.isSuccess
+
+private fun supportsEd25519(): Boolean = runCatching {
+    KeyFactory.getInstance("Ed25519")
+    val pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+    Signature.getInstance("Ed25519").run {
+        initSign(pair.private)
+        update(SSH_CAPABILITY_TEST_MESSAGE)
+        check(sign().isNotEmpty())
+    }
+}.isSuccess
+
+private fun supportsRsaSignature(algorithm: String): Boolean = runCatching {
+    KeyFactory.getInstance("RSA")
+    Signature.getInstance(algorithm)
+}.isSuccess
+
+private fun usableCipherFactories(
+    candidates: List<Factory.Named<SshCipher>>
+): List<Factory.Named<SshCipher>> = candidates.filter { factory ->
+    runCatching {
+        val cipher = factory.create()
+        cipher.init(
+            SshCipher.Mode.Encrypt,
+            ByteArray(cipher.blockSize),
+            ByteArray(cipher.ivSize)
+        )
+    }.isSuccess
+}
+
+private fun usableMacFactories(
+    candidates: List<Factory.Named<MAC>>
+): List<Factory.Named<MAC>> = candidates.filter { factory ->
+    runCatching {
+        val mac = factory.create()
+        mac.init(ByteArray(mac.blockSize))
+        check(mac.doFinal(SSH_CAPABILITY_TEST_MESSAGE).isNotEmpty())
+    }.isSuccess
+}
+
+private val SSH_CAPABILITY_TEST_MESSAGE = "symposium-ssh-capability".toByteArray()
+
 class RemoteInstaller(private val appContext: Context) {
+    private val sshCredentialStore = SshCredentialStore(appContext)
+
+    internal fun hasStoredSshCredentials(): Boolean = sshCredentialStore.hasAny()
+
     data class RelayRemovalResult(
         val success: Boolean,
         val observedSshHostKeyPin: String? = null
@@ -255,52 +898,47 @@ class RemoteInstaller(private val appContext: Context) {
         password: String,
         expectedSshHostKeyPin: String?,
         existingProfile: DeploymentProfile? = null,
+        relayCapacity: RelayCapacityConfig = existingProfile?.relayCapacity
+            ?: RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD),
         logger: suspend (String) -> Unit
     ): InstallResult = withContext(Dispatchers.IO) {
         requireKnownSshHostKeyPin(expectedSshHostKeyPin)
+        require(relayCapacity.validationError() == null) {
+            relayCapacity.validationError()?.let(::tr) ?: tr(TextId.INVALID_RELAY_CAPACITY)
+        }
 
         var observedHostKeyPin: String? = null
         var selectedProfile: DeploymentProfile? = null
         var installMarkerCreated = false
 
         try {
-            logger("Подключение к серверу…")
+            logger(tr(TextId.CONNECTING_TO_SERVER))
 
-            buildSshClientNoX25519().use { ssh ->
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
                 ssh.connect(serverIp)
-                ssh.authPassword(login, password)
+                authenticateSsh(ssh, serverIp, login, password)
 
-                logger("SSH готов")
+                logger(tr(TextId.SSH_READY))
 
-                val discovered = discoverRandomizedDeployments(
+                val existingDeployments = discoverRandomizedDeployments(
                     ssh = ssh,
                     login = login,
                     password = password,
                     serverIp = serverIp
                 )
-                val currentDeployment = discovered.firstOrNull {
-                    it.installed && it.relayInfo != null
-                }
-                val staleDeployments = if (currentDeployment == null) {
-                    discovered
-                } else {
-                    discovered.filterNot {
-                        it.profile.serviceName == currentDeployment.profile.serviceName
-                    }
-                }
                 val legacyDeploymentPresent = hasLegacyDeployment(
                     ssh = ssh,
                     login = login,
                     password = password
                 )
 
-                if (staleDeployments.isNotEmpty() || legacyDeploymentPresent) {
-                    logger("Найдены старые или неработающие установки; удаление…")
-                    staleDeployments.forEach { deployment ->
+                if (existingDeployments.isNotEmpty() || legacyDeploymentPresent) {
+                    logger(tr(TextId.AN_EXISTING_INSTALLATION_WAS_FOUND_REMOVING_IT_COMPLETELY_BEFORE_THE_NEW))
+                    existingDeployments.forEach { deployment ->
                         val removal = runRootOrSudo(
                             ssh = ssh,
                             login = login,
@@ -308,7 +946,7 @@ class RemoteInstaller(private val appContext: Context) {
                             command = buildRemovalScript(deployment.profile)
                         )
                         check(removal.exitStatus == 0) {
-                            "Не удалось удалить старый сервис ${deployment.profile.serviceName}"
+                            tr(TextId.FAILED_TO_REMOVE_OLD_SERVICE, deployment.profile.serviceName)
                         }
                     }
                     if (legacyDeploymentPresent) {
@@ -319,31 +957,31 @@ class RemoteInstaller(private val appContext: Context) {
                             command = LEGACY_REMOVAL_SCRIPT
                         )
                         check(removal.exitStatus == 0) {
-                            "Не удалось удалить старую установку"
+                            tr(TextId.COULD_NOT_REMOVE_THE_OLD_INSTALLATION)
                         }
                     }
-                    logger("Старые установки удалены")
-                }
-
-                if (currentDeployment != null) {
-                    logger("Работающая установка найдена; конфигурация синхронизирована")
-                    return@withContext InstallResult(
-                        success = true,
-                        relayInfo = currentDeployment.relayInfo,
-                        deploymentProfile = currentDeployment.profile,
-                        openRooms = currentDeployment.openRooms,
-                        exitStatus = 0,
-                        observedSshHostKeyPin = observedHostKeyPin
-                    )
+                    logger(tr(TextId.THE_EXISTING_INSTALLATION_WAS_COMPLETELY_REMOVED))
                 }
 
                 val removedExistingInstallation =
-                    staleDeployments.isNotEmpty() || legacyDeploymentPresent
-                val deploymentProfile = if (removedExistingInstallation) {
+                    existingDeployments.isNotEmpty() || legacyDeploymentPresent
+                val baseProfile = if (removedExistingInstallation) {
                     generateDeploymentProfile()
                 } else {
                     existingProfile ?: generateDeploymentProfile()
                 }
+                val mediaPorts = relayIceUdpPortRange(
+                    baseProfile.iceUdpPortMin..baseProfile.iceUdpPortMax,
+                    relayCapacity
+                )
+                val deploymentProfile = baseProfile.copy(
+                    relayCapacity = relayCapacity,
+                    iceUdpPortMin = mediaPorts.first,
+                    iceUdpPortMax = mediaPorts.last,
+                    // A reinstall/update must invalidate any token that may have appeared in
+                    // legacy shell history or process arguments.
+                    adminToken = randomSecret()
+                )
                 selectedProfile = deploymentProfile
                 val markerResult = runRootOrSudo(
                     ssh = ssh,
@@ -351,17 +989,17 @@ class RemoteInstaller(private val appContext: Context) {
                     password = password,
                     command = "printf '%s\n' \"${'$'}(date +%s)\" > ${shQuote(INSTALL_IN_PROGRESS_MARKER_PATH)} && chmod 600 ${shQuote(INSTALL_IN_PROGRESS_MARKER_PATH)}"
                 )
-                check(markerResult.exitStatus == 0) { "Не удалось установить маркер установки" }
+                check(markerResult.exitStatus == 0) { tr(TextId.COULD_NOT_CREATE_THE_INSTALLATION_MARKER) }
                 installMarkerCreated = true
 
                 val installRemoteDir = deploymentProfile.stagingDir
-                logger("Очистка…")
+                logger(tr(TextId.CLEANING_UP))
                 ssh.startSession().use { session ->
                     val cmd = session.exec(
                         "rm -rf ${shQuote(installRemoteDir)} && mkdir -p ${shQuote(installRemoteDir)} && chmod 700 ${shQuote(installRemoteDir)}"
                     )
                     cmd.join()
-                    check((cmd.exitStatus ?: 1) == 0) { "Не удалось подготовить каталог установщика" }
+                    check((cmd.exitStatus ?: 1) == 0) { tr(TextId.COULD_NOT_PREPARE_THE_INSTALLER_DIRECTORY) }
                 }
             }
 
@@ -369,7 +1007,7 @@ class RemoteInstaller(private val appContext: Context) {
             val installRemoteDir = deploymentProfile.stagingDir
             val remoteScript = "$installRemoteDir/${deploymentProfile.binaryName}.sh"
 
-            logger("Подготовка файлов…")
+            logger(tr(TextId.PREPARING_FILES))
             val scriptBytes = renderInstallScript(deploymentProfile, serverIp).toByteArray(Charsets.UTF_8)
 
             uploadResumableFile(
@@ -379,12 +1017,12 @@ class RemoteInstaller(private val appContext: Context) {
                 expectedSshHostKeyPin = expectedSshHostKeyPin,
                 remotePath = remoteScript,
                 payload = scriptBytes,
-                label = "Скрипт",
+                label = tr(TextId.SCRIPT),
                 logger = logger,
                 onObservedPin = { pin -> observedHostKeyPin = pin }
             )
 
-            logger("Скачивание SymposiumRelay из GitHub Release…")
+            logger(tr(TextId.DOWNLOADING_SYMPOSIUMRELAY_FROM_THE_GITHUB_RELEASE))
             var installRun = runRemoteInstallScript(
                 serverIp = serverIp,
                 login = login,
@@ -400,7 +1038,7 @@ class RemoteInstaller(private val appContext: Context) {
                 installRun.exitStatus != 0 &&
                 installRun.combinedOutput.contains(RELAY_DOWNLOAD_FAILED_MARKER)
             ) {
-                logger("GitHub Release недоступен; используется резервный файл из приложения…")
+                logger(tr(TextId.THE_GITHUB_RELEASE_IS_UNAVAILABLE_USING_THE_FALLBACK_FILE_BUNDLED_WITH_T))
                 val binBytes = appContext.assets.open(SERVER_BIN_ASSET_PATH).use { it.readBytes() }
                 uploadResumableFile(
                     serverIp = serverIp,
@@ -409,12 +1047,12 @@ class RemoteInstaller(private val appContext: Context) {
                     expectedSshHostKeyPin = expectedSshHostKeyPin,
                     remotePath = "$installRemoteDir/${deploymentProfile.binaryName}.src",
                     payload = binBytes,
-                    label = "Резервный файл сервера",
+                    label = tr(TextId.FALLBACK_SERVER_BINARY),
                     logger = logger,
                     onObservedPin = { pin -> observedHostKeyPin = pin }
                 )
 
-                logger("Повторный запуск с резервным файлом…")
+                logger(tr(TextId.RETRYING_WITH_THE_FALLBACK_FILE))
                 installRun = runRemoteInstallScript(
                     serverIp = serverIp,
                     login = login,
@@ -431,82 +1069,73 @@ class RemoteInstaller(private val appContext: Context) {
                 installRun.exitStatus != 0 &&
                 installRun.combinedOutput.contains(EXISTING_INSTALL_FOUND_MARKER)
             ) {
-                logger("Во время установки найден существующий сервис; проверка…")
-                var healthyDeployment: DiscoveredDeployment? = null
-                var removedStaleDeployment = false
-                buildSshClientNoX25519().use { ssh ->
+                logger(tr(TextId.AN_EXISTING_SERVICE_WAS_FOUND_DURING_INSTALLATION_REMOVING_IT_COMPLETELY))
+                var removedExistingDeployment = false
+                buildSshClient().use { ssh ->
                     val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                         observedHostKeyPin = pin
                     }
                     ssh.addHostKeyVerifier(verifier)
                     ssh.connect(serverIp)
-                    ssh.authPassword(login, password)
+                    authenticateSsh(ssh, serverIp, login, password)
                     val deployments = discoverRandomizedDeployments(
                         ssh = ssh,
                         login = login,
                         password = password,
                         serverIp = serverIp
                     )
-                    healthyDeployment = deployments.firstOrNull {
-                        it.installed && it.relayInfo != null
-                    }
-                    val staleDeployments = if (healthyDeployment == null) {
-                        deployments
-                    } else {
-                        deployments.filterNot {
-                            it.profile.serviceName == healthyDeployment?.profile?.serviceName
-                        }
-                    }
                     val legacyDeploymentPresent = hasLegacyDeployment(ssh, login, password)
-                    if (staleDeployments.isNotEmpty() || legacyDeploymentPresent) {
-                        logger("Удаление найденных неработающих установок…")
-                        staleDeployments.forEach { stale ->
-                            val removal = runRootOrSudo(
-                                ssh = ssh,
-                                login = login,
-                                password = password,
-                                command = buildRemovalScript(stale.profile)
-                            )
-                            check(removal.exitStatus == 0) {
-                                "Не удалось удалить старый сервис ${stale.profile.serviceName}"
-                            }
+                    deployments.forEach { deployment ->
+                        val removal = runRootOrSudo(
+                            ssh = ssh,
+                            login = login,
+                            password = password,
+                            command = buildRemovalScript(deployment.profile)
+                        )
+                        check(removal.exitStatus == 0) {
+                            tr(TextId.FAILED_TO_REMOVE_OLD_SERVICE, deployment.profile.serviceName)
                         }
-                        if (legacyDeploymentPresent) {
-                            val removal = runRootOrSudo(
-                                ssh = ssh,
-                                login = login,
-                                password = password,
-                                command = LEGACY_REMOVAL_SCRIPT
-                            )
-                            check(removal.exitStatus == 0) {
-                                "Не удалось удалить старую установку"
-                            }
+                        removedExistingDeployment = true
+                    }
+                    if (legacyDeploymentPresent) {
+                        val removal = runRootOrSudo(
+                            ssh = ssh,
+                            login = login,
+                            password = password,
+                            command = LEGACY_REMOVAL_SCRIPT
+                        )
+                        check(removal.exitStatus == 0) {
+                            tr(TextId.COULD_NOT_REMOVE_THE_OLD_INSTALLATION)
                         }
-                        removedStaleDeployment = true
+                        removedExistingDeployment = true
+                    }
+
+                    // The install script deliberately recognizes a wider range of old
+                    // managed units than the structured parser. Remove any such unit too,
+                    // otherwise an older or partially written unit would keep returning 42.
+                    val forcedRemoval = runRootOrSudo(
+                        ssh = ssh,
+                        login = login,
+                        password = password,
+                        command = FORCED_EXISTING_INSTALL_REMOVAL_SCRIPT
+                    )
+                    check(forcedRemoval.exitStatus == 0) {
+                        tr(TextId.SERVICE_REMOVAL_INCOMPLETE)
+                    }
+                    if (forcedRemoval.stdout.contains(EXISTING_INSTALL_REMOVED_MARKER)) {
+                        removedExistingDeployment = true
                     }
                 }
 
-                val synchronizedDeployment = healthyDeployment
-                if (synchronizedDeployment?.relayInfo != null) {
-                    logger("Конфигурация синхронизирована")
-                    return@withContext InstallResult(
-                        success = true,
-                        relayInfo = synchronizedDeployment.relayInfo,
-                        deploymentProfile = synchronizedDeployment.profile,
-                        openRooms = synchronizedDeployment.openRooms,
-                        exitStatus = 0,
-                        observedSshHostKeyPin = observedHostKeyPin
-                    )
-                }
-
-                if (removedStaleDeployment) {
-                    logger("Старые установки удалены; повтор чистой установки…")
+                if (removedExistingDeployment) {
+                    logger(tr(TextId.THE_EXISTING_INSTALLATION_WAS_REMOVED_STARTING_A_NEW_INSTALLATION))
                     return@withContext performInstallationDetailed(
                         serverIp = serverIp,
                         login = login,
                         password = password,
                         expectedSshHostKeyPin = expectedSshHostKeyPin,
                         existingProfile = null,
+                        relayCapacity = relayCapacity,
                         logger = logger
                     )
                 }
@@ -521,7 +1150,7 @@ class RemoteInstaller(private val appContext: Context) {
 
             val exitStatus = installRun.exitStatus
             if (exitStatus != 0) {
-                logger("Ошибка установки: код $exitStatus")
+                logger(tr(TextId.INSTALLATION_FAILED_CODE, exitStatus))
                 return@withContext InstallResult(
                     success = false,
                     deploymentProfile = deploymentProfile,
@@ -534,8 +1163,8 @@ class RemoteInstaller(private val appContext: Context) {
                 .find(installRun.combinedOutput)
                 ?.groupValues
                 ?.getOrNull(1)
-                ?: throw IllegalStateException("Установщик не вернул TLS pin")
-            logger("Готово")
+                ?: throw IllegalStateException(tr(TextId.THE_INSTALLER_DID_NOT_RETURN_A_TLS_PIN))
+            logger(tr(TextId.DONE))
             InstallResult(
                 success = true,
                 relayInfo = RelayInfo(
@@ -555,9 +1184,9 @@ class RemoteInstaller(private val appContext: Context) {
             if (sshError != null) {
                 logger(sshError)
             } else if (msg.contains("X25519", ignoreCase = true)) {
-                logger("Ошибка SSH: X25519 не поддерживается")
+                logger(tr(TextId.SSH_ERROR_X25519_IS_NOT_SUPPORTED))
             } else {
-                logger("Ошибка установки: $msg")
+                logger(tr(TextId.INSTALLATION_ERROR_MESSAGE, msg))
             }
             throw IllegalStateException(sshError ?: msg, e)
         } finally {
@@ -586,16 +1215,16 @@ class RemoteInstaller(private val appContext: Context) {
 
         var observedHostKeyPin: String? = null
         try {
-            logger("Подключение к серверу…")
-            buildSshClientNoX25519().use { ssh ->
+            logger(tr(TextId.CONNECTING_TO_SERVER))
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
                 ssh.connect(serverIp)
-                ssh.authPassword(login, password)
+                authenticateSsh(ssh, serverIp, login, password)
 
-                logger("Удаление Relay…")
+                logger(tr(TextId.REMOVING_RELAY))
                 val effectiveProfile = deploymentProfile ?: discoverRandomizedDeployments(
                     ssh = ssh,
                     login = login,
@@ -606,7 +1235,7 @@ class RemoteInstaller(private val appContext: Context) {
                     buildRemovalScript(profile)
                 } ?: LEGACY_REMOVAL_SCRIPT
                 val exitStatus = runRootOrSudo(ssh, login, password, cmdText).exitStatus
-                check(exitStatus == 0) { "Удаление SymposiumRelay завершилось с ошибкой (код $exitStatus)" }
+                check(exitStatus == 0) { tr(TextId.REMOVAL_FAILED_CODE, exitStatus) }
 
                 ssh.startSession().use { cleanupSession ->
                     val stagingDir = effectiveProfile?.stagingDir ?: LEGACY_INSTALL_REMOTE_DIR
@@ -614,13 +1243,17 @@ class RemoteInstaller(private val appContext: Context) {
                     cleanupCmd.join()
                 }
 
-                logger("Relay удалён")
+                logger(tr(TextId.RELAY_REMOVED))
                 RelayRemovalResult(success = true, observedSshHostKeyPin = observedHostKeyPin)
             }
         } catch (e: Exception) {
             val sshError = explainSshConnectionIssue(e)
-            if (sshError != null) logger(sshError) else logger("Ошибка удаления: ${e.message ?: e.javaClass.simpleName}")
-            throw IllegalStateException(sshError ?: (e.message ?: "Неизвестная ошибка"), e)
+            if (sshError != null) {
+                logger(sshError)
+            } else {
+                logger(tr(TextId.REMOVAL_ERROR_MESSAGE, e.message ?: e.javaClass.simpleName))
+            }
+            throw IllegalStateException(sshError ?: (e.message ?: tr(TextId.UNKNOWN_ERROR)), e)
         }
     }
 
@@ -645,13 +1278,13 @@ class RemoteInstaller(private val appContext: Context) {
             attempt++
 
             try {
-                buildSshClientNoX25519().use { ssh ->
+                buildSshClient().use { ssh ->
                     val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                         onObservedPin(pin)
                     }
                     ssh.addHostKeyVerifier(verifier)
                     ssh.connect(serverIp)
-                    ssh.authPassword(login, password)
+                    authenticateSsh(ssh, serverIp, login, password)
 
                     ssh.newSFTPClient().use { sftp ->
                         var remoteBytes = runCatching { sftp.stat(tempPath).size }.getOrElse { 0L }
@@ -662,9 +1295,9 @@ class RemoteInstaller(private val appContext: Context) {
 
                         if (remoteBytes > 0L && remoteBytes < totalBytes) {
                             val percent = ((remoteBytes * 100) / totalBytes).toInt()
-                            logger("$label: с $percent%")
+                            logger(tr(TextId.INSTALLATION_PROGRESS, trExternal(label), percent))
                         } else if (remoteBytes == 0L) {
-                            logger("$label: 0%")
+                            logger(tr(TextId.INSTALLATION_PROGRESS, trExternal(label), 0))
                         }
 
                         sftp.open(tempPath, EnumSet.of(OpenMode.CREAT, OpenMode.WRITE)).use { remoteFile ->
@@ -681,7 +1314,13 @@ class RemoteInstaller(private val appContext: Context) {
                                 val bucket = percent / UPLOAD_PROGRESS_STEP_PERCENT
                                 if (bucket > lastReportedBucket || offset == totalBytes) {
                                     lastReportedBucket = bucket
-                                    logger("$label: ${percent.coerceAtMost(100)}%")
+                                    logger(
+                                        tr(
+                                            TextId.INSTALLATION_PROGRESS,
+                                            trExternal(label),
+                                            percent.coerceAtMost(100)
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -699,7 +1338,14 @@ class RemoteInstaller(private val appContext: Context) {
                 return
             } catch (e: Exception) {
                 if (attempt >= MAX_UPLOAD_RETRIES) throw e
-                logger("$label: повтор ${attempt + 1}/$MAX_UPLOAD_RETRIES")
+                logger(
+                    tr(
+                        TextId.OPERATION_RETRY,
+                        trExternal(label),
+                        attempt + 1,
+                        MAX_UPLOAD_RETRIES
+                    )
+                )
                 delay(1500L * attempt)
             }
         }
@@ -725,14 +1371,14 @@ class RemoteInstaller(private val appContext: Context) {
         while (true) {
             attempt++
             try {
-                return buildSshClientNoX25519().use { ssh ->
+                return buildSshClient().use { ssh ->
                     val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                         onObservedPin(pin)
                     }
                     ssh.addHostKeyVerifier(verifier)
 
                     ssh.connect(serverIp)
-                    ssh.authPassword(login, password)
+                    authenticateSsh(ssh, serverIp, login, password)
 
                     ssh.startSession().use { session ->
                         val isRootLogin = login.trim() == "root"
@@ -745,12 +1391,14 @@ class RemoteInstaller(private val appContext: Context) {
                         val runCmd = "${env}bash ${shQuote(remoteScript)} ${shQuote(serverIp)}"
                         val launchCmd = if (isRootLogin) {
                             "chmod +x ${shQuote(remoteScript)} && $runCmd"
+                        } else if (password.isBlank()) {
+                            "chmod +x ${shQuote(remoteScript)} && sudo -n /bin/bash -lc ${shQuote(runCmd)}"
                         } else {
                             "chmod +x ${shQuote(remoteScript)} && sudo -S -p '' $runCmd"
                         }
 
                         val cmd = session.exec(launchCmd)
-                        if (!isRootLogin) {
+                        if (!isRootLogin && password.isNotBlank()) {
                             cmd.outputStream.bufferedWriter(Charsets.UTF_8).use { stdin ->
                                 stdin.write(password)
                                 stdin.newLine()
@@ -797,7 +1445,7 @@ class RemoteInstaller(private val appContext: Context) {
                 }
             } catch (e: Exception) {
                 if (attempt >= MAX_SSH_REQUEST_RETRIES || !shouldRetryNetworkRequest(e)) throw e
-                logger("SSH: повтор ${attempt + 1}/$MAX_SSH_REQUEST_RETRIES")
+                logger(tr(TextId.SSH_RETRY, attempt + 1, MAX_SSH_REQUEST_RETRIES))
                 delay(retryDelayMs(attempt))
             }
         }
@@ -843,24 +1491,24 @@ class RemoteInstaller(private val appContext: Context) {
 
         private fun stageMessage(line: String): String? {
             return when {
-                "[1/8]" in line -> "1/8 Проверка"
-                "[2/8]" in line -> "2/8 Зависимости"
-                "[3/8]" in line -> "3/8 Файрвол"
-                "[4/8]" in line -> "4/8 Токен"
-                "[5/8]" in line -> "5/8 Сервис"
-                "[6/8]" in line -> "6/8 Запуск"
+                "[1/8]" in line -> tr(TextId.STEP_1_8_CHECK)
+                "[2/8]" in line -> tr(TextId.STEP_2_8_DEPENDENCIES)
+                "[3/8]" in line -> tr(TextId.STEP_3_8_FIREWALL)
+                "[4/8]" in line -> tr(TextId.STEP_4_8_TOKEN)
+                "[5/8]" in line -> tr(TextId.STEP_5_8_SERVICE)
+                "[6/8]" in line -> tr(TextId.STEP_6_8_START)
                 "[7/8]" in line -> "7/8 HTTPS/WSS"
-                "[8/8]" in line -> "8/8 Проверка"
+                "[8/8]" in line -> tr(TextId.STEP_8_8_VERIFICATION)
                 else -> null
             }
         }
 
         private fun finalMessage(line: String): String? {
             return when {
-                line.startsWith("Installation finished.", ignoreCase = true) -> "Сервер готов"
-                line.startsWith("SYMPOSIUM_PIN=", ignoreCase = true) -> "Pin получен"
-                line.startsWith("SYMPOSIUM_HTTPS=", ignoreCase = true) -> "HTTPS готов"
-                line.startsWith("SYMPOSIUM_WSS=", ignoreCase = true) -> "WSS готов"
+                line.startsWith("Installation finished.", ignoreCase = true) -> tr(TextId.SERVER_READY)
+                line.startsWith("SYMPOSIUM_PIN=", ignoreCase = true) -> tr(TextId.PIN_RECEIVED)
+                line.startsWith("SYMPOSIUM_HTTPS=", ignoreCase = true) -> tr(TextId.HTTPS_READY)
+                line.startsWith("SYMPOSIUM_WSS=", ignoreCase = true) -> tr(TextId.WSS_READY)
                 else -> null
             }
         }
@@ -868,9 +1516,9 @@ class RemoteInstaller(private val appContext: Context) {
         private fun errorMessage(line: String): String {
             val message = translateServerError(line)
             return if (errorShown.compareAndSet(false, true)) {
-                "Инфо: $message"
+                tr(TextId.INFO_MESSAGE, message)
             } else {
-                "Инфо: $message"
+                tr(TextId.INFO_MESSAGE, message)
             }
         }
 
@@ -878,25 +1526,23 @@ class RemoteInstaller(private val appContext: Context) {
             val text = line.removePrefix("ERROR:").trim()
             return when {
                 text.contains(RELAY_DOWNLOAD_FAILED_MARKER, ignoreCase = true) ->
-                    "не удалось скачать файл сервера"
+                    tr(TextId.COULD_NOT_DOWNLOAD_THE_SERVER_BINARY)
                 text.contains("installer must be run as root", ignoreCase = true) ->
-                    "нужны права root"
+                    tr(TextId.ROOT_ACCESS_IS_REQUIRED)
                 text.contains("APT is locked", ignoreCase = true) || text.contains("APT still locked", ignoreCase = true) ->
-                    "APT занят другим процессом"
+                    tr(TextId.APT_IS_BUSY_WITH_ANOTHER_PROCESS)
                 text.contains("Permission denied", ignoreCase = true) ->
-                    "нет прав доступа"
+                    tr(TextId.PERMISSION_DENIED)
                 text.contains("No such file or directory", ignoreCase = true) ->
-                    "файл не найден"
+                    tr(TextId.FILE_NOT_FOUND)
                 text.contains("command not found", ignoreCase = true) ->
-                    "команда не найдена"
+                    tr(TextId.COMMAND_NOT_FOUND)
                 text.contains("nginx: [emerg]", ignoreCase = true) ->
-                    "ошибка Nginx"
-                text.contains("Failed to", ignoreCase = true) ->
-                    "операция не выполнена"
+                    tr(TextId.NGINX_ERROR)
                 text.isBlank() ->
-                    "неизвестная ошибка"
+                    tr(TextId.UNKNOWN_ERROR_2)
                 else ->
-                    text.take(160)
+                    text.take(240)
             }
         }
     }
@@ -912,13 +1558,13 @@ class RemoteInstaller(private val appContext: Context) {
         var observedHostKeyPin: String? = null
 
         try {
-            buildSshClientNoX25519().use { ssh ->
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
                 ssh.connect(serverIp)
-                ssh.authPassword(login, password)
+                authenticateSsh(ssh, serverIp, login, password)
 
                 if (isInstallInProgress(ssh, login, password)) {
                     return@use ProbeResult(
@@ -1003,7 +1649,7 @@ class RemoteInstaller(private val appContext: Context) {
                 )
             }
         } catch (e: Exception) {
-            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: "Не удалось подключиться к серверу"), e)
+            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: tr(TextId.COULD_NOT_CONNECT_TO_THE_SERVER)), e)
         }
     }
 
@@ -1022,13 +1668,13 @@ class RemoteInstaller(private val appContext: Context) {
 
         var observedHostKeyPin: String? = null
         try {
-            buildSshClientNoX25519().use { ssh ->
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
                 ssh.connect(serverIp)
-                ssh.authPassword(login, password)
+                authenticateSsh(ssh, serverIp, login, password)
 
                 val deployment = discoverRandomizedDeployments(
                     ssh = ssh,
@@ -1046,8 +1692,8 @@ class RemoteInstaller(private val appContext: Context) {
                         password = password,
                         command = """
                             set -e
-                            token="${'$'}(cat ${shQuote(tokenPath)})"
-                            curl -fsS -X POST -H "X-Relay-Key: ${'$'}token" ${shQuote("http://127.0.0.1:${deployment.profile.adminPort}${actionPath}?name=$encodedRoom")} >/dev/null
+                            { printf 'X-Relay-Key: '; tr -d '\r\n' < ${shQuote(tokenPath)}; printf '\n'; } |
+                              curl -fsS -X POST -H @- ${shQuote("http://127.0.0.1:${deployment.profile.adminPort}${actionPath}?name=$encodedRoom")} >/dev/null
                         """.trimIndent()
                     )
                     check(result.exitStatus == 0) {
@@ -1066,23 +1712,26 @@ class RemoteInstaller(private val appContext: Context) {
                     )
                 }
 
-                val adminToken = readAdminToken(ssh, login, password)
-                require(!adminToken.isNullOrBlank()) { "Admin token is missing on server" }
-
                 val actionPath = if (open) "/admin/open-room" else "/admin/close-room"
                 val encodedRoom = URLEncoder.encode(room, Charsets.UTF_8.name())
-                ssh.startSession().use { session ->
-                    val cmd = session.exec(
-                        "curl -fsS -X POST -H ${shQuote("X-Relay-Key: $adminToken")} 'http://127.0.0.1:3002${actionPath}?name=${encodedRoom}' >/dev/null"
-                    )
-                    cmd.join()
-                    check((cmd.exitStatus ?: 1) == 0) { "Failed to ${if (open) "open" else "close"} room" }
+                val legacyResult = runRootOrSudo(
+                    ssh = ssh,
+                    login = login,
+                    password = password,
+                    command = """
+                        set -e
+                        { printf 'X-Relay-Key: '; tr -d '\r\n' < ${shQuote(ADMIN_TOKEN_PATH)}; printf '\n'; } |
+                          curl -fsS -X POST -H @- ${shQuote("http://127.0.0.1:3002${actionPath}?name=$encodedRoom")} >/dev/null
+                    """.trimIndent()
+                )
+                check(legacyResult.exitStatus == 0) {
+                    "Failed to ${if (open) "open" else "close"} room"
                 }
 
                 fetchOpenRooms(ssh, login, password, observedHostKeyPin, serverIp)
             }
         } catch (e: Exception) {
-            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: "Не удалось подключиться к серверу"), e)
+            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: tr(TextId.COULD_NOT_CONNECT_TO_THE_SERVER)), e)
         }
     }
 
@@ -1096,13 +1745,13 @@ class RemoteInstaller(private val appContext: Context) {
 
         var observedHostKeyPin: String? = null
         try {
-            buildSshClientNoX25519().use { ssh ->
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
                 ssh.connect(serverIp)
-                ssh.authPassword(login, password)
+                authenticateSsh(ssh, serverIp, login, password)
                 discoverRandomizedDeployments(
                     ssh = ssh,
                     login = login,
@@ -1118,7 +1767,7 @@ class RemoteInstaller(private val appContext: Context) {
                 fetchOpenRooms(ssh, login, password, observedHostKeyPin, serverIp)
             }
         } catch (e: Exception) {
-            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: "Не удалось подключиться к серверу"), e)
+            throw IllegalStateException(explainSshConnectionIssue(e) ?: (e.message ?: tr(TextId.COULD_NOT_CONNECT_TO_THE_SERVER)), e)
         }
     }
 
@@ -1133,7 +1782,7 @@ class RemoteInstaller(private val appContext: Context) {
         val port = httpsPort ?: 443
 
         require(token.isNotBlank()) { "Admin token is missing" }
-        require(pin.isNotBlank()) { "TLS pin is missing" }
+        require(pin.isNotBlank()) { tr(TextId.TLS_PIN_IS_MISSING) }
 
         val base = if (port == 443) "https://$serverIp" else "https://$serverIp:$port"
         val client = pinnedHttpsClient(pin, callTimeoutSeconds = RELAY_VERSION_TIMEOUT_SECONDS)
@@ -1160,9 +1809,9 @@ class RemoteInstaller(private val appContext: Context) {
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            throw IllegalStateException("SymposiumRelay не установлен", e)
+            throw IllegalStateException(tr(TextId.SYMPOSIUMRELAY_IS_NOT_INSTALLED), e)
         } catch (e: SocketTimeoutException) {
-            throw IllegalStateException("SymposiumRelay не установлен", e)
+            throw IllegalStateException(tr(TextId.SYMPOSIUMRELAY_IS_NOT_INSTALLED), e)
         }
     }
 
@@ -1177,7 +1826,7 @@ class RemoteInstaller(private val appContext: Context) {
         val port = httpsPort ?: 443
 
         require(token.isNotBlank()) { "Admin token is missing" }
-        require(pin.isNotBlank()) { "TLS pin is missing" }
+        require(pin.isNotBlank()) { tr(TextId.TLS_PIN_IS_MISSING) }
 
         val base = if (port == 443) "https://$serverIp" else "https://$serverIp:$port"
         val client = pinnedHttpsClient(pin)
@@ -1211,7 +1860,9 @@ class RemoteInstaller(private val appContext: Context) {
         relayTlsPin: String?,
         adminToken: String?,
         roomName: String,
-        open: Boolean
+        open: Boolean,
+        muteAllByDefault: Boolean = false,
+        admitWithoutApproval: Boolean = false
     ): RoomAdminResult = withContext(Dispatchers.IO) {
         val token = adminToken?.trim().orEmpty()
         val pin = relayTlsPin?.trim().orEmpty()
@@ -1219,7 +1870,7 @@ class RemoteInstaller(private val appContext: Context) {
         val port = httpsPort ?: 443
 
         require(token.isNotBlank()) { "Admin token is missing" }
-        require(pin.isNotBlank()) { "TLS pin is missing" }
+        require(pin.isNotBlank()) { tr(TextId.TLS_PIN_IS_MISSING) }
         require(room.isNotBlank()) { "Room name is empty" }
 
         val base = if (port == 443) "https://$serverIp" else "https://$serverIp:$port"
@@ -1227,8 +1878,54 @@ class RemoteInstaller(private val appContext: Context) {
         val encodedRoom = URLEncoder.encode(room, Charsets.UTF_8.name())
 
         val client = pinnedHttpsClient(pin)
+        val settingsQuery = if (open) {
+            "&muteAllByDefault=$muteAllByDefault&admitWithoutApproval=$admitWithoutApproval"
+        } else {
+            ""
+        }
         val request = Request.Builder()
-            .url("$base$actionPath?name=$encodedRoom")
+            .url("$base$actionPath?name=$encodedRoom$settingsQuery")
+            .header("X-Relay-Key", token)
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+
+        retryNetworkRequest {
+            client.newCall(request).execute().use { response ->
+                response.body?.string()
+                check(response.isSuccessful) { "Admin request failed: HTTP ${response.code}" }
+            }
+        }
+
+        fetchOpenRoomsOverHttps(serverIp, port, pin, token)
+    }
+
+    suspend fun setRoomSettingsOverHttps(
+        serverIp: String,
+        httpsPort: Int?,
+        relayTlsPin: String?,
+        adminToken: String?,
+        roomName: String,
+        muteAllByDefault: Boolean,
+        admitWithoutApproval: Boolean
+    ): RoomAdminResult = withContext(Dispatchers.IO) {
+        val token = adminToken?.trim().orEmpty()
+        val pin = relayTlsPin?.trim().orEmpty()
+        val room = roomName.trim()
+        val port = httpsPort ?: 443
+
+        require(token.isNotBlank()) { "Admin token is missing" }
+        require(pin.isNotBlank()) { tr(TextId.TLS_PIN_IS_MISSING) }
+        require(room.isNotBlank()) { "Room name is empty" }
+
+        val base = if (port == 443) "https://$serverIp" else "https://$serverIp:$port"
+        val encodedRoom = URLEncoder.encode(room, Charsets.UTF_8.name())
+        val client = pinnedHttpsClient(pin)
+        val request = Request.Builder()
+            .url(
+                "$base/admin/room-settings?name=$encodedRoom" +
+                    "&muteAllByDefault=$muteAllByDefault" +
+                    "&admitWithoutApproval=$admitWithoutApproval"
+            )
             .header("X-Relay-Key", token)
             .post(ByteArray(0).toRequestBody(null))
             .build()
@@ -1256,7 +1953,7 @@ class RemoteInstaller(private val appContext: Context) {
         val port = httpsPort ?: 443
 
         require(token.isNotBlank()) { "Admin token is missing" }
-        require(pin.isNotBlank()) { "TLS pin is missing" }
+        require(pin.isNotBlank()) { tr(TextId.TLS_PIN_IS_MISSING) }
         require(room.isNotBlank()) { "Room name is empty" }
 
         val base = if (port == 443) "https://$serverIp" else "https://$serverIp:$port"
@@ -1301,7 +1998,10 @@ class RemoteInstaller(private val appContext: Context) {
         if (root is CertificateException) return false
         if (message.contains("pin mismatch", ignoreCase = true)) return false
         if (message.contains("TLS pin", ignoreCase = true)) return false
-        if (message.contains("SSH-ключ", ignoreCase = true)) return false
+        if (
+            message.contains("SSH key", ignoreCase = true) ||
+            message.contains("SSH-ключ", ignoreCase = true)
+        ) return false
         if (message.contains("Admin token is missing", ignoreCase = true)) return false
         if (message.contains("Room name is empty", ignoreCase = true)) return false
         if (message.contains("Server version is missing", ignoreCase = true)) return false
@@ -1333,16 +2033,16 @@ class RemoteInstaller(private val appContext: Context) {
         val root = generateSequence(error) { it.cause }.last()
         val message = (root.message ?: error.message ?: "").trim()
         if (root is UserAuthException || message.contains("auth fail", ignoreCase = true)) {
-            return "Ошибка SSH-аутентификации: неверный логин или пароль."
+            return tr(TextId.SSH_AUTHENTICATION_FAILED_INCORRECT_LOGIN_OR_PASSWORD_2)
         }
         if (message.contains("host key", ignoreCase = true) ||
             message.contains("key verification", ignoreCase = true) ||
             message.contains("certificate", ignoreCase = true)
         ) {
-            return "Ошибка SSH-сертификата сервера: ключ сервера не прошёл проверку."
+            return tr(TextId.SERVER_SSH_KEY_VERIFICATION_FAILED)
         }
         if (root is TransportException && message.contains("disconnect", ignoreCase = true)) {
-            return "SSH-соединение разорвано сервером во время аутентификации."
+            return tr(TextId.THE_SERVER_CLOSED_THE_SSH_CONNECTION_DURING_AUTHENTICATION)
         }
         return null
     }
@@ -1357,15 +2057,18 @@ class RemoteInstaller(private val appContext: Context) {
         val adminToken = readAdminToken(ssh, login, password)
         require(!adminToken.isNullOrBlank()) { "Admin token is missing on server" }
 
-        val out = ssh.startSession().use { session ->
-            val cmd = session.exec(
-                "curl -fsS -H ${shQuote("X-Relay-Key: $adminToken")} http://127.0.0.1:3002/admin/open-rooms"
-            )
-            cmd.join()
-            val txt = cmd.inputStream.bufferedReader().readText()
-            check((cmd.exitStatus ?: 1) == 0) { "Failed to get open rooms" }
-            txt
-        }
+        val roomsResult = runRootOrSudo(
+            ssh = ssh,
+            login = login,
+            password = password,
+            command = """
+                set -e
+                { printf 'X-Relay-Key: '; tr -d '\r\n' < ${shQuote(ADMIN_TOKEN_PATH)}; printf '\n'; } |
+                  curl -fsS -H @- http://127.0.0.1:3002/admin/open-rooms
+            """.trimIndent()
+        )
+        check(roomsResult.exitStatus == 0) { "Failed to get open rooms" }
+        val out = roomsResult.stdout
 
         val rooms = parseOpenRoomsJson(out)
 
@@ -1430,10 +2133,10 @@ class RemoteInstaller(private val appContext: Context) {
         password: String,
         expectedSshHostKeyPin: String?
     ) {
-        buildSshClientNoX25519().use { ssh ->
+        buildSshClient().use { ssh ->
             ssh.addHostKeyVerifier(Sha256HostKeyPinVerifier(expectedSshHostKeyPin) { })
             ssh.connect(serverIp)
-            ssh.authPassword(login, password)
+            authenticateSsh(ssh, serverIp, login, password)
             runRootOrSudo(
                 ssh = ssh,
                 login = login,
@@ -1536,7 +2239,7 @@ class RemoteInstaller(private val appContext: Context) {
             .substringAfterLast('/')
             .removeSuffix(".service")
             .also { require(SAFE_SYSTEMD_NAME.matches(it)) }
-        val appDir = property("WorkingDirectory").trimEnd('/')
+        val workingDirectory = property("WorkingDirectory").trimEnd('/')
             .also(::requireSafeAbsolutePath)
         val serviceUser = property("User").also { require(SAFE_ACCOUNT_NAME.matches(it)) }
         val serviceGroup = property("Group").also { require(SAFE_ACCOUNT_NAME.matches(it)) }
@@ -1558,6 +2261,10 @@ class RemoteInstaller(private val appContext: Context) {
 
         require(flagValue("--admin-on-public").equals("true", ignoreCase = true))
         val executablePath = tokens.first().also(::requireSafeAbsolutePath)
+        val binaryDirectory = executablePath.substringBeforeLast('/', missingDelimiterValue = "")
+            .also(::requireSafeAbsolutePath)
+        val appDir = binaryDirectory.substringBeforeLast('/', missingDelimiterValue = "")
+            .also(::requireSafeAbsolutePath)
         val databasePath = flagValue("--rooms-db").also(::requireSafeAbsolutePath)
         val tokenPath = flagValue("--admin-token-file").also(::requireSafeAbsolutePath)
         val certificatePath = flagValue("--tls-cert").also(::requireSafeAbsolutePath)
@@ -1569,6 +2276,10 @@ class RemoteInstaller(private val appContext: Context) {
         val (certificateDirName, certificateName) = splitManagedFilePath(appDir, certificatePath)
         val (privateKeyDirName, privateKeyName) = splitManagedFilePath(appDir, privateKeyPath)
         require(identityDirName == certificateDirName && identityDirName == privateKeyDirName)
+        require(
+            workingDirectory == appDir ||
+                workingDirectory == "$appDir/$stateDirName"
+        )
 
         val publicPort = parseListenPort(flagValue("--addr"))
         val adminAddress = flagValue("--admin-addr")
@@ -1586,6 +2297,35 @@ class RemoteInstaller(private val appContext: Context) {
         val dbRoomColumn = flagValue("--db-room-column").also { require(SAFE_DB_IDENTIFIER.matches(it)) }
         val dbKeyColumn = flagValue("--db-key-column").also { require(SAFE_DB_IDENTIFIER.matches(it)) }
         require(dbRoomColumn != dbKeyColumn)
+
+        val capacityDefaults = RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD)
+        val relayCapacity = normalizeRelayCapacityConfig(
+            RelayCapacityConfig(
+                preset = RelayCapacityPreset.CUSTOM,
+                maxActivePeers = optionalFlagValue("--max-active-peers")?.toInt()
+                    ?: capacityDefaults.maxActivePeers,
+                maxPendingLobbyPeers = optionalFlagValue("--max-pending-lobby-peers")?.toInt()
+                    ?: capacityDefaults.maxPendingLobbyPeers,
+                pendingIceCandidatesPerPeer = optionalFlagValue("--pending-ice-candidates-per-peer")?.toInt()
+                    ?: capacityDefaults.pendingIceCandidatesPerPeer,
+                pendingIceBytesPerPeer = optionalFlagValue("--pending-ice-bytes-per-peer")?.toLong()
+                    ?: capacityDefaults.pendingIceBytesPerPeer,
+                pendingIceBytesTotal = optionalFlagValue("--pending-ice-bytes-total")?.toLong()
+                    ?: capacityDefaults.pendingIceBytesTotal,
+                joinRatePerMinute = optionalFlagValue("--join-rate-per-minute")?.toInt()
+                    ?: capacityDefaults.joinRatePerMinute,
+                maxConcurrentJoins = optionalFlagValue("--max-concurrent-joins")?.toInt()
+                    ?: capacityDefaults.maxConcurrentJoins,
+                maxPreJoinConnections = optionalFlagValue("--max-pre-join-connections")?.toInt()
+                    ?: capacityDefaults.maxPreJoinConnections,
+                maxPreJoinConnectionsPerIp = optionalFlagValue("--max-pre-join-connections-per-ip")?.toInt()
+                    ?: capacityDefaults.maxPreJoinConnectionsPerIp,
+                preJoinTimeoutSeconds = optionalFlagValue("--pre-join-timeout")
+                    ?.removeSuffix("s")
+                    ?.toInt()
+                    ?: capacityDefaults.preJoinTimeoutSeconds
+            ).also { require(it.validationError() == null) }
+        )
 
         ParsedDeploymentUnit(
             profile = DeploymentProfile(
@@ -1613,7 +2353,8 @@ class RemoteInstaller(private val appContext: Context) {
                 iceUdpPortMax = iceMax,
                 firewallTag = serviceName,
                 stagingDir = ".cache/.${randomHex(8)}",
-                adminToken = ""
+                adminToken = "",
+                relayCapacity = relayCapacity
             ),
             tokenPath = tokenPath,
             certificatePath = certificatePath
@@ -1678,9 +2419,9 @@ class RemoteInstaller(private val appContext: Context) {
             password = password,
             command = """
                 set -e
-                token="${'$'}(cat ${shQuote(tokenPath)})"
-                version="${'$'}(curl -fsS --connect-timeout 5 --max-time 10 -H "X-Relay-Key: ${'$'}token" http://127.0.0.1:${profile.adminPort}/admin/version)"
-                rooms="${'$'}(curl -fsS --connect-timeout 5 --max-time 10 -H "X-Relay-Key: ${'$'}token" http://127.0.0.1:${profile.adminPort}/admin/open-rooms)"
+                auth_header() { printf 'X-Relay-Key: '; tr -d '\r\n' < ${shQuote(tokenPath)}; printf '\n'; }
+                version="${'$'}(auth_header | curl -fsS --connect-timeout 5 --max-time 10 -H @- http://127.0.0.1:${profile.adminPort}/admin/version)"
+                rooms="${'$'}(auth_header | curl -fsS --connect-timeout 5 --max-time 10 -H @- http://127.0.0.1:${profile.adminPort}/admin/open-rooms)"
                 printf 'VERSION_B64=%s\n' "${'$'}(printf '%s' "${'$'}version" | base64 | tr -d '\n')"
                 printf 'ROOMS_B64=%s\n' "${'$'}(printf '%s' "${'$'}rooms" | base64 | tr -d '\n')"
             """.trimIndent()
@@ -1723,13 +2464,15 @@ class RemoteInstaller(private val appContext: Context) {
         val isRootLogin = login.trim() == "root"
         val shellCommand = if (isRootLogin) {
             "bash -lc ${shQuote(command)}"
+        } else if (password.isBlank()) {
+            "sudo -n /bin/bash -lc ${shQuote(command)}"
         } else {
             "sudo -S -p '' bash -lc ${shQuote(command)}"
         }
 
         return ssh.startSession().use { session ->
             val cmd = session.exec(shellCommand)
-            if (!isRootLogin) {
+            if (!isRootLogin && password.isNotBlank()) {
                 cmd.outputStream.bufferedWriter(Charsets.UTF_8).use { stdin ->
                     stdin.write(password)
                     stdin.newLine()
@@ -1804,47 +2547,223 @@ class RemoteInstaller(private val appContext: Context) {
         return RelayInfo(host = host, httpsPort = httpsPort, pin = pin, adminToken = adminToken)
     }
 
-    suspend fun observeSshHostKeyPin(serverIp: String): String = withContext(Dispatchers.IO) {
+    suspend fun observeSshHostKeyPin(
+        serverIp: String,
+        port: Int = DEFAULT_SSH_PORT
+    ): String = withContext(Dispatchers.IO) {
         var observedHostKeyPin: String? = null
+        var connectionFailure: Exception? = null
 
         try {
-            buildSshClientNoX25519().use { ssh ->
+            buildSshClient().use { ssh ->
                 val verifier = Sha256HostKeyPinVerifier(expectedPin = null) { pin ->
                     observedHostKeyPin = pin
                 }
                 ssh.addHostKeyVerifier(verifier)
-                ssh.connect(serverIp)
+                ssh.connect(serverIp, port)
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            connectionFailure = error
         }
 
         observedHostKeyPin?.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("Не удалось получить SSH-ключ сервера")
+            ?: throw IllegalStateException(
+                tr(TextId.COULD_NOT_RETRIEVE_THE_SERVER_SSH_KEY),
+                connectionFailure
+            )
+    }
+
+    suspend fun enrollSshKey(
+        serverIp: String,
+        login: String,
+        password: String,
+        expectedSshHostKeyPin: String?
+    ) = withContext(Dispatchers.IO) {
+        requireKnownSshHostKeyPin(expectedSshHostKeyPin)
+        require(password.isNotBlank()) { "Password is required for the first connection" }
+
+        val keyPair = sshCredentialStore.getSession(serverIp, login)
+            ?: sshCredentialStore.generate(serverIp, login)
+
+        buildSshClient().use { ssh ->
+            try {
+                ssh.addHostKeyVerifier(Sha256HostKeyPinVerifier(expectedSshHostKeyPin) {})
+                ssh.connect(serverIp)
+                ssh.authPassword(login, password)
+            } catch (error: Exception) {
+                diagnosticWarning(TAG, "SSH key enrollment password stage failed: ${sshErrorSummary(error)}")
+                val message = explainSshConnectionIssue(error)
+                    ?: tr(TextId.COULD_NOT_CONFIGURE_SSH_KEY_ACCESS)
+                throw IllegalStateException(message, error)
+            }
+
+            if (login.trim() != "root") {
+                require(SAFE_SSH_USERNAME.matches(login.trim())) { "Unsupported SSH username" }
+                val noPasswordSudo = runRootOrSudo(
+                    ssh = ssh,
+                    login = login,
+                    password = password,
+                    command = """
+                        set -e
+                        file=/etc/sudoers.d/symposium-${login.trim()}
+                        printf '%s\n' ${shQuote("${login.trim()} ALL=(root) NOPASSWD: /bin/bash")} > "${'$'}file"
+                        chmod 0440 "${'$'}file"
+                        visudo -cf "${'$'}file" >/dev/null
+                    """.trimIndent()
+                )
+                if (noPasswordSudo.exitStatus != 0) {
+                    diagnosticWarning(
+                        TAG,
+                        "SSH key enrollment sudo stage failed: ${safeRemoteError(noPasswordSudo.stderr)}"
+                    )
+                    throw IllegalStateException(
+                        tr(TextId.COULD_NOT_CONFIGURE_PASSWORDLESS_ADMINISTRATION)
+                    )
+                }
+            }
+
+            try {
+                installSshPublicKey(ssh, keyPair, login, password)
+            } catch (error: Exception) {
+                diagnosticWarning(TAG, "SSH public key installation failed: ${sshErrorSummary(error)}")
+                throw IllegalStateException(tr(TextId.COULD_NOT_INSTALL_SSH_PUBLIC_KEY), error)
+            }
+        }
+
+        try {
+            buildSshClient().use { ssh ->
+                ssh.addHostKeyVerifier(Sha256HostKeyPinVerifier(expectedSshHostKeyPin) {})
+                ssh.connect(serverIp)
+                ssh.authPublickey(login, ssh.loadKeys(keyPair))
+            }
+        } catch (error: Exception) {
+            diagnosticWarning(TAG, "SSH installed key verification failed: ${sshErrorSummary(error)}")
+            throw IllegalStateException(tr(TextId.SERVER_REJECTED_INSTALLED_SSH_KEY), error)
+        }
+        sshCredentialStore.deleteLegacy(serverIp, login)
+    }
+
+    internal suspend fun migrateLegacySshCredential(
+        serverIp: String,
+        login: String,
+        expectedSshHostKeyPin: String?
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!sshCredentialStore.hasLegacy(serverIp, login)) return@withContext true
+        requireKnownSshHostKeyPin(expectedSshHostKeyPin)
+
+        buildSshClient().use { ssh ->
+            ssh.addHostKeyVerifier(Sha256HostKeyPinVerifier(expectedSshHostKeyPin) {})
+            ssh.connect(serverIp)
+            authenticateSsh(ssh, serverIp, login, password = "")
+        }
+        !sshCredentialStore.hasLegacy(serverIp, login)
+    }
+
+    fun hasSshKey(serverIp: String, login: String): Boolean {
+        return sshCredentialStore.contains(serverIp, login)
+    }
+
+    fun deleteSshKey(serverIp: String, login: String) {
+        sshCredentialStore.delete(serverIp, login)
     }
 
     private fun requireKnownSshHostKeyPin(expectedPin: String?) {
         require(!expectedPin.isNullOrBlank()) {
-            "SSH-ключ сервера ещё не принят. Сначала добавьте сервер и подтвердите его ключ."
+            tr(TextId.THE_SERVER_SSH_KEY_HAS_NOT_BEEN_TRUSTED_YET_ADD_THE_SERVER_AND_CONFIRM_I)
         }
     }
 
-    private fun buildSshClientNoX25519(): SSHClient {
-        val config = DefaultSecurityProviderConfig().apply {
-            setKeyExchangeFactories(
-                listOf(
-                    ECDHNistP.Factory256(),
-                    ECDHNistP.Factory384(),
-                    ECDHNistP.Factory521(),
-                    DHGexSHA256.Factory(),
-                    DHG14.Factory()
-                )
-            )
-        }
-        return SSHClient(config).apply {
+    private fun buildSshClient(): SSHClient {
+        return SSHClient(AndroidCompatibleSshConfig()).apply {
             setConnectTimeout(20_000)
             setTimeout(30_000)
         }
     }
+
+    private fun authenticateSsh(
+        ssh: SSHClient,
+        serverIp: String,
+        login: String,
+        password: String
+    ) {
+        // An explicitly supplied password belongs to the current add-server operation. Prefer it
+        // over cached keys, which may be stale after a failed enrollment or server reinstall.
+        if (password.isNotBlank()) {
+            ssh.authPassword(login, password)
+            return
+        }
+
+        val legacyKeyPair = sshCredentialStore.getLegacy(serverIp, login)
+        if (legacyKeyPair != null) {
+            ssh.authPublickey(login, ssh.loadKeys(legacyKeyPair))
+            runCatching {
+                val sessionKeyPair = sshCredentialStore.getSession(serverIp, login)
+                    ?: sshCredentialStore.generate(serverIp, login)
+                installSshPublicKey(ssh, sessionKeyPair, login, password = "")
+                sshCredentialStore.deleteLegacy(serverIp, login)
+            }
+            return
+        }
+
+        val sessionKeyPair = sshCredentialStore.getSession(serverIp, login)
+        if (sessionKeyPair != null) {
+            ssh.authPublickey(login, ssh.loadKeys(sessionKeyPair))
+            return
+        }
+        error("SSH key is unavailable; add the server again")
+    }
+
+    private fun installSshPublicKey(
+        ssh: SSHClient,
+        keyPair: KeyPair,
+        login: String,
+        password: String
+    ) {
+        val normalizedLogin = login.trim()
+        require(SAFE_SSH_USERNAME.matches(normalizedLogin)) { "Unsupported SSH username" }
+        val publicLine = opensshRsaPublicKey(keyPair.public)
+        val command = """
+            set -e
+            user=${shQuote(normalizedLogin)}
+            home="${'$'}(getent passwd "${'$'}user" | cut -d: -f6)"
+            group="${'$'}(id -gn "${'$'}user")"
+            test -n "${'$'}home"
+            install -d -m 0700 -o "${'$'}user" -g "${'$'}group" "${'$'}home/.ssh"
+            touch "${'$'}home/.ssh/authorized_keys"
+            chown "${'$'}user:${'$'}group" "${'$'}home/.ssh/authorized_keys"
+            chmod 0600 "${'$'}home/.ssh/authorized_keys"
+            grep -qxF ${shQuote(publicLine)} "${'$'}home/.ssh/authorized_keys" || printf '%s\n' ${shQuote(publicLine)} >> "${'$'}home/.ssh/authorized_keys"
+            chown "${'$'}user:${'$'}group" "${'$'}home/.ssh/authorized_keys"
+            chmod 0600 "${'$'}home/.ssh/authorized_keys"
+        """.trimIndent()
+        val result = runRootOrSudo(
+            ssh = ssh,
+            login = normalizedLogin,
+            password = password,
+            command = command
+        )
+        check(result.exitStatus == 0) {
+            safeRemoteError(result.stderr).ifBlank { "Unable to install SSH public key" }
+        }
+    }
+
+    private fun sshErrorSummary(error: Throwable): String =
+        generateSequence(error) { it.cause }
+            .take(4)
+            .joinToString(" <- ") { cause ->
+                val message = cause.message.orEmpty()
+                    .replace(Regex("[\\r\\n\\t]+"), " ")
+                    .take(160)
+                "${cause.javaClass.simpleName}:$message"
+            }
+
+    private fun safeRemoteError(value: String): String = value
+        .lineSequence()
+        .map(String::trim)
+        .firstOrNull { it.isNotBlank() }
+        .orEmpty()
+        .replace(Regex("[\\r\\n\\t]+"), " ")
+        .take(200)
 
     private class Sha256HostKeyPinVerifier(
         private val expectedPin: String?,
@@ -1873,58 +2792,6 @@ class RemoteInstaller(private val appContext: Context) {
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val b64 = Base64.encodeToString(digest, Base64.NO_WRAP)
             return "sha256/$b64"
-        }
-    }
-
-    private class SpkiPinTrustManager(expectedPinRaw: String) : X509TrustManager {
-        private val expectedPin = normalizePin(expectedPinRaw)
-
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-            if (chain.isNullOrEmpty()) {
-                throw CertificateException("Empty server certificate chain")
-            }
-
-            val peerPins = mutableListOf<String>()
-            for (cert in chain) {
-                val pin = spkiPin(cert)
-                peerPins += pin
-                if (secureEquals(pin, expectedPin)) return
-            }
-
-            throw CertificateException(
-                buildString {
-                    append("SPKI pin mismatch.\n")
-                    append("Expected: ").append(expectedPin).append('\n')
-                    append("Peer pins:\n")
-                    peerPins.forEach { append("  ").append(it).append('\n') }
-                }
-            )
-        }
-
-        private fun spkiPin(cert: X509Certificate): String {
-            val digest = MessageDigest.getInstance("SHA-256").digest(cert.publicKey.encoded)
-            val b64 = Base64.encodeToString(digest, Base64.NO_WRAP)
-            return "sha256/$b64"
-        }
-
-        private fun secureEquals(a: String, b: String): Boolean {
-            return MessageDigest.isEqual(
-                a.toByteArray(Charsets.UTF_8),
-                b.toByteArray(Charsets.UTF_8)
-            )
-        }
-
-        companion object {
-            private fun normalizePin(pin: String): String {
-                val p = pin.trim()
-                require(p.startsWith("sha256/")) { "TLS pin must start with sha256/" }
-                require(p.length > "sha256/".length) { "TLS pin is empty" }
-                return p
-            }
         }
     }
 
@@ -2025,11 +2892,24 @@ class RemoteInstaller(private val appContext: Context) {
             "@@ADMIN_PORT@@" to profile.adminPort.toString(),
             "@@ICE_MIN@@" to profile.iceUdpPortMin.toString(),
             "@@ICE_MAX@@" to profile.iceUdpPortMax.toString(),
+            "@@MAX_ACTIVE_PEERS@@" to profile.relayCapacity.maxActivePeers.toString(),
+            "@@MAX_PENDING_LOBBY_PEERS@@" to profile.relayCapacity.maxPendingLobbyPeers.toString(),
+            "@@PENDING_ICE_CANDIDATES_PER_PEER@@" to profile.relayCapacity.pendingIceCandidatesPerPeer.toString(),
+            "@@PENDING_ICE_BYTES_PER_PEER@@" to profile.relayCapacity.pendingIceBytesPerPeer.toString(),
+            "@@PENDING_ICE_BYTES_TOTAL@@" to profile.relayCapacity.pendingIceBytesTotal.toString(),
+            "@@JOIN_RATE_PER_MINUTE@@" to profile.relayCapacity.joinRatePerMinute.toString(),
+            "@@MAX_CONCURRENT_JOINS@@" to profile.relayCapacity.maxConcurrentJoins.toString(),
+            "@@MAX_PRE_JOIN_CONNECTIONS@@" to profile.relayCapacity.maxPreJoinConnections.toString(),
+            "@@MAX_PRE_JOIN_CONNECTIONS_PER_IP@@" to profile.relayCapacity.maxPreJoinConnectionsPerIp.toString(),
+            "@@PRE_JOIN_TIMEOUT@@" to relayDurationSeconds(
+                profile.relayCapacity.preJoinTimeoutSeconds
+            ),
             "@@FIREWALL_TAG@@" to shQuote(profile.firewallTag),
             "@@ADMIN_TOKEN@@" to shQuote(profile.adminToken),
             "@@RELAY_RELEASE_VERSION@@" to relayRelease.version,
             "@@RELAY_DOWNLOAD_URL@@" to relayRelease.downloadUrl,
-            "@@RELAY_SHA256@@" to relayRelease.sha256
+            "@@RELAY_SHA256@@" to relayRelease.sha256,
+            "@@RELAY_BUNDLED_SHA256@@" to relayRelease.bundledSha256
         )
         return replacements.entries.fold(ISOLATED_INSTALL_SCRIPT) { script, entry ->
             script.replace(entry.key, entry.value)
@@ -2072,6 +2952,7 @@ class RemoteInstaller(private val appContext: Context) {
         private const val SERVER_BIN_ASSET_PATH = "symposium/symposium-server-linux-amd64"
         private const val RELAY_DOWNLOAD_FAILED_MARKER = "RELAY_DOWNLOAD_FAILED"
         private const val EXISTING_INSTALL_FOUND_MARKER = "EXISTING_INSTALL_FOUND"
+        private const val EXISTING_INSTALL_REMOVED_MARKER = "EXISTING_INSTALL_REMOVED"
         private const val EXISTING_DEPLOYMENT_UNHEALTHY_EXIT_CODE = 42
         private const val INSTALL_IN_PROGRESS_MARKER_PATH = "/run/.network-worker-bootstrap.pending"
         private const val INSTALL_MARKER_MAX_AGE_SECONDS = 30 * 60
@@ -2079,6 +2960,7 @@ class RemoteInstaller(private val appContext: Context) {
         private const val MAX_UPLOAD_RETRIES = 10
         private const val MAX_SSH_REQUEST_RETRIES = 4
         private const val MAX_HTTP_REQUEST_RETRIES = 4
+        private const val DEFAULT_SSH_PORT = 22
         private const val NETWORK_RETRY_BASE_DELAY_MS = 750L
         private const val RELAY_VERSION_TIMEOUT_SECONDS = 8L
         private const val RELAY_VERSION_TIMEOUT_MS = RELAY_VERSION_TIMEOUT_SECONDS * 1000L
@@ -2117,6 +2999,8 @@ class RemoteInstaller(private val appContext: Context) {
             rm -f /etc/systemd/system/symposium-server.service
             systemctl daemon-reload
             rm -rf /opt/symposium-server
+            rm -rf /var/lib/symposium-server
+            rm -f /etc/symposium/admin-token
             userdel symposium 2>/dev/null || true
             groupdel symposium 2>/dev/null || true
             rm -f /etc/nginx/sites-enabled/symposium-relay.conf
@@ -2125,6 +3009,134 @@ class RemoteInstaller(private val appContext: Context) {
             rm -f /etc/nginx/sites-available/symposium.conf
             rm -f /etc/nginx/conf.d/symposium_ws_map.conf
             nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+        """.trimIndent()
+
+        private val FORCED_EXISTING_INSTALL_REMOVAL_SCRIPT = """
+            set -Eeuo pipefail
+            removed=0
+
+            safe_path() {
+              local path="${'$'}{1:-}"
+              [[ "${'$'}path" =~ ^/[A-Za-z0-9._/-]+${'$'} ]] || return 1
+              [ "${'$'}path" != "/" ] || return 1
+              [[ "/${'$'}path/" != *"/../"* ]] || return 1
+              [[ "/${'$'}path/" != *"/./"* ]] || return 1
+            }
+
+            safe_account() {
+              [[ "${'$'}{1:-}" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,30}${'$'} ]]
+            }
+
+            unit_scalar() {
+              local key="${'$'}1"
+              local unit="${'$'}2"
+              sed -nE "s/^[[:space:]]*${'$'}{key}=([^[:space:]]+).*/\\1/p" "${'$'}unit" | head -n 1
+            }
+
+            flag_value() {
+              local name="${'$'}1"
+              local command="${'$'}2"
+              printf '%s\n' "${'$'}command" |
+                sed -nE "s/.*${'$'}{name}(=|[[:space:]]+)([^[:space:]]+).*/\\2/p" |
+                head -n 1
+            }
+
+            valid_port() {
+              [[ "${'$'}{1:-}" =~ ^[0-9]+${'$'} ]] || return 1
+              [ "${'$'}1" -ge 1 ] && [ "${'$'}1" -le 65535 ]
+            }
+
+            for unit in /etc/systemd/system/*.service; do
+              [ -f "${'$'}unit" ] || continue
+              grep -Fq -- '--admin-on-public=true' "${'$'}unit" || continue
+              grep -Fq -- '--rooms-db' "${'$'}unit" || continue
+              grep -Fq -- '--db-table' "${'$'}unit" || continue
+              grep -Fq -- '--db-room-column' "${'$'}unit" || continue
+              grep -Fq -- '--db-key-column' "${'$'}unit" || continue
+              grep -Fq -- '--admin-token-file' "${'$'}unit" || continue
+              grep -Fq -- '--tls-cert' "${'$'}unit" || continue
+              grep -Fq -- '--tls-key' "${'$'}unit" || continue
+
+              service="${'$'}{unit##*/}"
+              service="${'$'}{service%.service}"
+              [[ "${'$'}service" =~ ^[A-Za-z0-9_.@-]{1,128}${'$'} ]] || {
+                echo "unsafe managed service name: ${'$'}service" >&2
+                exit 1
+              }
+
+              exec_start="${'$'}(sed -nE 's/^[[:space:]]*ExecStart=//p' "${'$'}unit" | head -n 1)"
+              executable="${'$'}{exec_start%%[[:space:]]*}"
+              working_dir="${'$'}(unit_scalar WorkingDirectory "${'$'}unit")"
+              app_user="${'$'}(unit_scalar User "${'$'}unit")"
+              app_group="${'$'}(unit_scalar Group "${'$'}unit")"
+              database_path="${'$'}(flag_value --rooms-db "${'$'}exec_start")"
+              token_path="${'$'}(flag_value --admin-token-file "${'$'}exec_start")"
+              certificate_path="${'$'}(flag_value --tls-cert "${'$'}exec_start")"
+              private_key_path="${'$'}(flag_value --tls-key "${'$'}exec_start")"
+              public_address="${'$'}(flag_value --addr "${'$'}exec_start")"
+              public_port="${'$'}{public_address##*:}"
+              ice_min="${'$'}(flag_value --ice-udp-port-min "${'$'}exec_start")"
+              ice_max="${'$'}(flag_value --ice-udp-port-max "${'$'}exec_start")"
+
+              safe_path "${'$'}executable" || { echo "unsafe managed executable path" >&2; exit 1; }
+              binary_dir="${'$'}{executable%/*}"
+              app_dir="${'$'}{binary_dir%/*}"
+              safe_path "${'$'}app_dir" || { echo "unsafe managed application path" >&2; exit 1; }
+              case "${'$'}app_dir" in
+                /opt/*) ;;
+                *) echo "managed application is outside /opt" >&2; exit 1 ;;
+              esac
+
+              for managed_path in \
+                "${'$'}executable" \
+                "${'$'}working_dir" \
+                "${'$'}database_path" \
+                "${'$'}token_path" \
+                "${'$'}certificate_path" \
+                "${'$'}private_key_path"; do
+                safe_path "${'$'}managed_path" || { echo "unsafe managed data path" >&2; exit 1; }
+                case "${'$'}managed_path" in
+                  "${'$'}app_dir"|"${'$'}app_dir"/*) ;;
+                  *) echo "managed data is outside the application directory" >&2; exit 1 ;;
+                esac
+              done
+
+              systemctl stop "${'$'}{service}.service" 2>/dev/null || true
+              systemctl disable "${'$'}{service}.service" 2>/dev/null || true
+              rm -f -- "${'$'}unit"
+              rm -rf -- "${'$'}app_dir"
+
+              if safe_account "${'$'}app_user" && [ "${'$'}app_user" != root ]; then
+                account_home="${'$'}(getent passwd "${'$'}app_user" 2>/dev/null | cut -d: -f6 || true)"
+                if [ "${'$'}account_home" = "${'$'}app_dir" ]; then
+                  userdel "${'$'}app_user" 2>/dev/null || true
+                  if safe_account "${'$'}app_group" && [ "${'$'}app_group" != root ]; then
+                    groupdel "${'$'}app_group" 2>/dev/null || true
+                  fi
+                fi
+              fi
+
+              if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+                valid_port "${'$'}public_port" && ufw --force delete allow "${'$'}public_port/tcp" >/dev/null 2>&1 || true
+                if valid_port "${'$'}ice_min" && valid_port "${'$'}ice_max"; then
+                  ufw --force delete allow "${'$'}ice_min:${'$'}ice_max/udp" >/dev/null 2>&1 || true
+                fi
+              fi
+              if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+                valid_port "${'$'}public_port" && firewall-cmd --permanent --remove-port="${'$'}public_port/tcp" >/dev/null 2>&1 || true
+                if valid_port "${'$'}ice_min" && valid_port "${'$'}ice_max"; then
+                  firewall-cmd --permanent --remove-port="${'$'}ice_min-${'$'}ice_max/udp" >/dev/null 2>&1 || true
+                fi
+                firewall-cmd --reload >/dev/null 2>&1 || true
+              fi
+
+              removed=1
+            done
+
+            if [ "${'$'}removed" = "1" ]; then
+              systemctl daemon-reload
+              echo "EXISTING_INSTALL_REMOVED"
+            fi
         """.trimIndent()
 
         private val ISOLATED_INSTALL_SCRIPT = """
@@ -2156,15 +3168,27 @@ class RemoteInstaller(private val appContext: Context) {
             ADMIN_PORT=@@ADMIN_PORT@@
             ICE_MIN=@@ICE_MIN@@
             ICE_MAX=@@ICE_MAX@@
+            MAX_ACTIVE_PEERS=@@MAX_ACTIVE_PEERS@@
+            MAX_PENDING_LOBBY_PEERS=@@MAX_PENDING_LOBBY_PEERS@@
+            PENDING_ICE_CANDIDATES_PER_PEER=@@PENDING_ICE_CANDIDATES_PER_PEER@@
+            PENDING_ICE_BYTES_PER_PEER=@@PENDING_ICE_BYTES_PER_PEER@@
+            PENDING_ICE_BYTES_TOTAL=@@PENDING_ICE_BYTES_TOTAL@@
+            JOIN_RATE_PER_MINUTE=@@JOIN_RATE_PER_MINUTE@@
+            MAX_CONCURRENT_JOINS=@@MAX_CONCURRENT_JOINS@@
+            MAX_PRE_JOIN_CONNECTIONS=@@MAX_PRE_JOIN_CONNECTIONS@@
+            MAX_PRE_JOIN_CONNECTIONS_PER_IP=@@MAX_PRE_JOIN_CONNECTIONS_PER_IP@@
+            PRE_JOIN_TIMEOUT=@@PRE_JOIN_TIMEOUT@@
             FIREWALL_TAG=@@FIREWALL_TAG@@
             ADMIN_TOKEN=@@ADMIN_TOKEN@@
             SCRIPT_DIR="${'$'}(cd "${'$'}(dirname "${'$'}{BASH_SOURCE[0]}")" && pwd)"
             RELAY_RELEASE_VERSION="@@RELAY_RELEASE_VERSION@@"
             RELAY_DOWNLOAD_URL="${'$'}{SYMPOSIUM_RELAY_DOWNLOAD_URL:-@@RELAY_DOWNLOAD_URL@@}"
             RELAY_EXPECTED_SHA256="@@RELAY_SHA256@@"
+            RELAY_BUNDLED_SHA256="@@RELAY_BUNDLED_SHA256@@"
             LOCAL_BINARY="${'$'}SCRIPT_DIR/${'$'}BINARY_NAME.src"
             DOWNLOADED_BINARY="${'$'}SCRIPT_DIR/${'$'}BINARY_NAME.download"
             SERVER_BINARY_SOURCE=""
+            SERVER_BINARY_SHA256=""
             KEEP_STAGING=0
             BINARY_DIR="${'$'}APP_DIR/${'$'}BINARY_DIR_NAME"
             STATE_DIR="${'$'}APP_DIR/${'$'}STATE_DIR_NAME"
@@ -2208,11 +3232,12 @@ class RemoteInstaller(private val appContext: Context) {
 
             verify_server_binary() {
               local path="${'$'}1"
+              local expected="${'$'}2"
               local actual
               [ -s "${'$'}path" ] || return 1
               actual="${'$'}(sha256sum "${'$'}path")"
               actual="${'$'}{actual%% *}"
-              [ "${'$'}actual" = "${'$'}RELAY_EXPECTED_SHA256" ]
+              [ "${'$'}actual" = "${'$'}expected" ]
             }
 
             download_release_binary() {
@@ -2226,10 +3251,11 @@ class RemoteInstaller(private val appContext: Context) {
               local rc=${'$'}?
               set -e
 
-              if [ "${'$'}rc" -eq 0 ] && verify_server_binary "${'$'}tmp"; then
+              if [ "${'$'}rc" -eq 0 ] && verify_server_binary "${'$'}tmp" "${'$'}RELAY_EXPECTED_SHA256"; then
                 chmod 0750 "${'$'}tmp"
                 mv -f "${'$'}tmp" "${'$'}DOWNLOADED_BINARY"
                 SERVER_BINARY_SOURCE="${'$'}DOWNLOADED_BINARY"
+                SERVER_BINARY_SHA256="${'$'}RELAY_EXPECTED_SHA256"
                 log "GitHub Release download complete"
                 return 0
               fi
@@ -2242,8 +3268,9 @@ class RemoteInstaller(private val appContext: Context) {
             select_server_binary() {
               if [ "${'$'}{RELAY_FORCE_LOCAL_BINARY:-0}" = "1" ]; then
                 [ -s "${'$'}LOCAL_BINARY" ] || die "RELAY_DOWNLOAD_FAILED: app fallback binary is not available"
-                verify_server_binary "${'$'}LOCAL_BINARY" || die "RELAY_DOWNLOAD_FAILED: app fallback binary failed integrity verification"
+                verify_server_binary "${'$'}LOCAL_BINARY" "${'$'}RELAY_BUNDLED_SHA256" || die "RELAY_DOWNLOAD_FAILED: app fallback binary failed integrity verification"
                 SERVER_BINARY_SOURCE="${'$'}LOCAL_BINARY"
+                SERVER_BINARY_SHA256="${'$'}RELAY_BUNDLED_SHA256"
                 log "Using SymposiumRelay binary uploaded by the app"
                 return 0
               fi
@@ -2288,9 +3315,9 @@ class RemoteInstaller(private val appContext: Context) {
             log "[4/8] Create isolated identity"
             getent group "${'$'}APP_GROUP" >/dev/null 2>&1 || groupadd --system "${'$'}APP_GROUP"
             id -u "${'$'}APP_USER" >/dev/null 2>&1 || useradd --system --gid "${'$'}APP_GROUP" --home-dir "${'$'}APP_DIR" --no-create-home --shell /usr/sbin/nologin "${'$'}APP_USER"
-            install -d -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0750 "${'$'}APP_DIR"
-            install -d -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0750 "${'$'}BINARY_DIR" "${'$'}STATE_DIR"
-            install -d -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0700 "${'$'}IDENTITY_DIR"
+            install -d -o root -g "${'$'}APP_GROUP" -m 0750 "${'$'}APP_DIR"
+            install -d -o root -g "${'$'}APP_GROUP" -m 0750 "${'$'}BINARY_DIR" "${'$'}IDENTITY_DIR"
+            install -d -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0750 "${'$'}STATE_DIR"
             umask 077
             printf '%s\n' "${'$'}ADMIN_TOKEN" > "${'$'}TOKEN_PATH"
 
@@ -2304,11 +3331,11 @@ class RemoteInstaller(private val appContext: Context) {
 
             log "[6/8] Install isolated worker"
             [ -s "${'$'}SERVER_BINARY_SOURCE" ] || die "selected server binary is missing"
-            install -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0750 "${'$'}SERVER_BINARY_SOURCE" "${'$'}BINARY_DIR/${'$'}BINARY_NAME"
-            verify_server_binary "${'$'}BINARY_DIR/${'$'}BINARY_NAME" || die "installed server binary failed integrity verification"
+            install -o root -g "${'$'}APP_GROUP" -m 0750 "${'$'}SERVER_BINARY_SOURCE" "${'$'}BINARY_DIR/${'$'}BINARY_NAME"
+            verify_server_binary "${'$'}BINARY_DIR/${'$'}BINARY_NAME" "${'$'}SERVER_BINARY_SHA256" || die "installed server binary failed integrity verification"
             install -o "${'$'}APP_USER" -g "${'$'}APP_GROUP" -m 0600 /dev/null "${'$'}DATABASE_PATH"
-            chown "${'$'}APP_USER:${'$'}APP_GROUP" "${'$'}TOKEN_PATH" "${'$'}CERTIFICATE_PATH" "${'$'}PRIVATE_KEY_PATH"
-            chmod 600 "${'$'}TOKEN_PATH" "${'$'}PRIVATE_KEY_PATH"
+            chown "root:${'$'}APP_GROUP" "${'$'}TOKEN_PATH" "${'$'}CERTIFICATE_PATH" "${'$'}PRIVATE_KEY_PATH"
+            chmod 640 "${'$'}TOKEN_PATH" "${'$'}PRIVATE_KEY_PATH"
             chmod 644 "${'$'}CERTIFICATE_PATH"
 
             cat > "/etc/systemd/system/${'$'}SERVICE_NAME.service" <<UNIT
@@ -2319,18 +3346,21 @@ class RemoteInstaller(private val appContext: Context) {
 
             [Service]
             Type=simple
-            WorkingDirectory=${'$'}APP_DIR
-            ExecStart=${'$'}BINARY_DIR/${'$'}BINARY_NAME --instance-name ${'$'}INSTANCE_NAME --addr :${'$'}PUBLIC_PORT --admin-addr 127.0.0.1:${'$'}ADMIN_PORT --admin-on-public=true --public-base-url https://${'$'}SERVER_IP:${'$'}PUBLIC_PORT --public-ip ${'$'}SERVER_IP --nat1to1 ${'$'}SERVER_IP --rooms-db ${'$'}DATABASE_PATH --db-table ${'$'}DB_TABLE --db-room-column ${'$'}DB_ROOM_COLUMN --db-key-column ${'$'}DB_KEY_COLUMN --admin-token-file ${'$'}TOKEN_PATH --tls-cert ${'$'}CERTIFICATE_PATH --tls-key ${'$'}PRIVATE_KEY_PATH --ice-udp-port-min ${'$'}ICE_MIN --ice-udp-port-max ${'$'}ICE_MAX
+            WorkingDirectory=${'$'}STATE_DIR
+            ExecStart=${'$'}BINARY_DIR/${'$'}BINARY_NAME --instance-name ${'$'}INSTANCE_NAME --addr :${'$'}PUBLIC_PORT --admin-addr 127.0.0.1:${'$'}ADMIN_PORT --admin-on-public=true --public-ip ${'$'}SERVER_IP --nat1to1 ${'$'}SERVER_IP --rooms-db ${'$'}DATABASE_PATH --db-table ${'$'}DB_TABLE --db-room-column ${'$'}DB_ROOM_COLUMN --db-key-column ${'$'}DB_KEY_COLUMN --admin-token-file ${'$'}TOKEN_PATH --tls-cert ${'$'}CERTIFICATE_PATH --tls-key ${'$'}PRIVATE_KEY_PATH --ice-udp-port-min ${'$'}ICE_MIN --ice-udp-port-max ${'$'}ICE_MAX --max-active-peers ${'$'}MAX_ACTIVE_PEERS --max-pending-lobby-peers ${'$'}MAX_PENDING_LOBBY_PEERS --pending-ice-candidates-per-peer ${'$'}PENDING_ICE_CANDIDATES_PER_PEER --pending-ice-bytes-per-peer ${'$'}PENDING_ICE_BYTES_PER_PEER --pending-ice-bytes-total ${'$'}PENDING_ICE_BYTES_TOTAL --join-rate-per-minute ${'$'}JOIN_RATE_PER_MINUTE --max-concurrent-joins ${'$'}MAX_CONCURRENT_JOINS --max-pre-join-connections ${'$'}MAX_PRE_JOIN_CONNECTIONS --max-pre-join-connections-per-ip ${'$'}MAX_PRE_JOIN_CONNECTIONS_PER_IP --pre-join-timeout ${'$'}PRE_JOIN_TIMEOUT
             Restart=always
             RestartSec=2
+            LimitNOFILE=65536
             User=${'$'}APP_USER
             Group=${'$'}APP_GROUP
+            UMask=0077
             NoNewPrivileges=true
             PrivateTmp=true
             ProtectSystem=strict
             ProtectHome=true
             PrivateDevices=true
-            ReadWritePaths=${'$'}APP_DIR
+            ReadOnlyPaths=${'$'}APP_DIR
+            ReadWritePaths=${'$'}STATE_DIR
             CapabilityBoundingSet=
             AmbientCapabilities=
             LockPersonality=true
@@ -2344,710 +3374,244 @@ class RemoteInstaller(private val appContext: Context) {
             log "[7/8] Start isolated service"
             systemctl daemon-reload
             systemctl enable "${'$'}SERVICE_NAME.service" >/dev/null
-            systemctl restart "${'$'}SERVICE_NAME.service"
+            service_diagnostics() {
+              systemctl show "${'$'}SERVICE_NAME.service" --no-pager \
+                -p LoadState -p ActiveState -p SubState -p Result \
+                -p ExecMainCode -p ExecMainStatus >&2 || true
+              journalctl -u "${'$'}SERVICE_NAME.service" -n 40 \
+                --no-pager -o cat >&2 || true
+            }
+            if ! systemctl restart "${'$'}SERVICE_NAME.service"; then
+              service_diagnostics
+              systemctl stop "${'$'}SERVICE_NAME.service" 2>/dev/null || true
+              die "service failed to start"
+            fi
             sleep 2
-            systemctl is-active --quiet "${'$'}SERVICE_NAME.service" || die "service failed to start"
+            if ! systemctl is-active --quiet "${'$'}SERVICE_NAME.service"; then
+              service_diagnostics
+              systemctl stop "${'$'}SERVICE_NAME.service" 2>/dev/null || true
+              die "service failed to start"
+            fi
 
             log "[8/8] Verify pinned HTTPS endpoint"
-            curl -kfsS --connect-timeout 10 -H "X-Relay-Key: ${'$'}ADMIN_TOKEN" "https://127.0.0.1:${'$'}PUBLIC_PORT/admin/version" >/dev/null
+            if ! { printf 'X-Relay-Key: '; tr -d '\r\n' < "${'$'}TOKEN_PATH"; printf '\n'; } |
+              curl -kfsS --connect-timeout 10 -H @- "https://127.0.0.1:${'$'}PUBLIC_PORT/admin/version" >/dev/null; then
+              service_diagnostics
+              systemctl stop "${'$'}SERVICE_NAME.service" 2>/dev/null || true
+              die "service HTTPS health check failed"
+            fi
             echo "RELAY_TLS_PIN=${'$'}PIN"
             echo "Installation finished."
         """.trimIndent()
 
-        private val INSTALL_SCRIPT = """
-            #!/usr/bin/env bash
-            set -Eeuo pipefail
-            trap 'rc=${'$'}?; echo "ERROR: line ${'$'}LINENO: ${'$'}BASH_COMMAND" >&2; exit ${'$'}rc' ERR
-
-            log(){ echo "[${'$'}(date +'%F %T')] ${'$'}*"; }
-            die(){ echo "ERROR: ${'$'}*" >&2; exit 1; }
-            need_cmd(){ command -v "${'$'}1" >/dev/null 2>&1; }
-
-            if [ "${'$'}{EUID:-0}" -ne 0 ]; then
-               echo "ERROR: installer must be run as root" >&2
-               exit 1
-            fi
-
-            SERVER_IP="${'$'}{1:-}"
-            if [ -z "${'$'}SERVER_IP" ]; then
-              echo "Usage: ${'$'}0 SERVER_IP"
-              exit 1
-            fi
-
-            APP_DIR="/opt/symposium-server"
-            APP_NAME="symposium-server"
-            APP_USER="symposium"
-            APP_GROUP="symposium"
-            ROOMS_DB="${'$'}{APP_DIR}/open_rooms.db"
-            ADMIN_TOKEN_FILE="${'$'}{APP_DIR}/admin-token"
-            SCRIPT_DIR="${'$'}(cd "${'$'}(dirname "${'$'}{BASH_SOURCE[0]}")" && pwd)"
-            RELAY_DOWNLOAD_URL="${'$'}{SYMPOSIUM_RELAY_DOWNLOAD_URL:-${BuildConfig.RELAY_BINARY_URL}}"
-            LOCAL_BINARY="${'$'}{SCRIPT_DIR}/symposium-server"
-            DOWNLOADED_BINARY="${'$'}{SCRIPT_DIR}/symposium-server.download"
-            SERVER_BINARY_SOURCE=""
-            ICE_UDP_PORT_MIN="${'$'}{SYMPOSIUM_ICE_UDP_PORT_MIN:-32768}"
-            ICE_UDP_PORT_MAX="${'$'}{SYMPOSIUM_ICE_UDP_PORT_MAX:-60999}"
-            ICE_UDP_PORT_RANGE="${'$'}{ICE_UDP_PORT_MIN}:${'$'}{ICE_UDP_PORT_MAX}"
-            FIREWALLD_ICE_UDP_PORT_RANGE="${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}"
-
-            TLS_DIR="/etc/symposium/tls"
-            TLS_KEY="${'$'}{TLS_DIR}/relay.key"
-            TLS_CRT="${'$'}{TLS_DIR}/relay.crt"
-
-            export DEBIAN_FRONTEND=noninteractive
-
-            APT_OPTS=(
-              -o Dpkg::Use-Pty=0
-              -o Acquire::Retries=3
-              -o DPkg::Lock::Timeout=300
-            )
-
-            APT_LOCKS=(
-              /var/lib/dpkg/lock-frontend
-              /var/lib/dpkg/lock
-              /var/lib/apt/lists/lock
-              /var/lib/apt/archives/lock
-            )
-
-            apt_quiet_services() {
-              if need_cmd systemctl; then
-                systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades 2>/dev/null || true
-                systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
-                systemctl mask apt-daily.service apt-daily-upgrade.service unattended-upgrades 2>/dev/null || true
-              fi
-            }
-
-            wait_apt_locks() {
-              local timeout="${'$'}{1:-300}"
-              local start_ts now
-              start_ts="${'$'}(date +%s)"
-
-              while true; do
-                local locked=0
-                local f=""
-                for f in "${'$'}{APT_LOCKS[@]}"; do
-                  if fuser "${'$'}f" >/dev/null 2>&1; then
-                    locked=1
-                    break
-                  fi
-                done
-
-                if [ "${'$'}locked" -eq 0 ]; then
-                  if dpkg --audit 2>/dev/null | grep -q .; then
-                    log "dpkg interrupted earlier; running dpkg --configure -a"
-                    dpkg --configure -a || true
-                  fi
-                  return 0
-                fi
-
-                now="${'$'}(date +%s)"
-                if [ "${'$'}((now - start_ts))" -ge "${'$'}timeout" ]; then
-                  log "APT lock still held after ${'$'}{timeout}s (example lock: ${'$'}f)"
-                  ps aux | egrep 'apt|dpkg|unattended|apt.systemd.daily' | grep -v egrep || true
-                  return 1
-                fi
-
-                log "APT locked by another process; waiting..."
-                sleep 3
-              done
-            }
-
-            apt_run() {
-              local tries=30
-              local i=1
-              local out rc
-
-              while true; do
-                apt_quiet_services
-                wait_apt_locks 300 || die "APT is locked too long"
-
-                set +e
-                out="${'$'}(apt-get "${'$'}{APT_OPTS[@]}" "${'$'}@" 2>&1)"
-                rc=${'$'}?
-                set -e
-
-                if [ "${'$'}rc" -eq 0 ]; then
-                  [ -n "${'$'}out" ] && echo "${'$'}out"
-                  return 0
-                fi
-
-                if echo "${'$'}out" | grep -qiE 'Could not get lock|Unable to acquire|Unable to lock|Waiting for cache lock|is another process using it|Could not open lock file'; then
-                  log "APT lock contention (retry ${'$'}i/${'$'}tries)"
-                  sleep 3
-                  i="${'$'}((i+1))"
-                  if [ "${'$'}i" -gt "${'$'}tries" ]; then
-                    echo "${'$'}out"
-                    die "APT still locked after ${'$'}tries retries"
-                  fi
-                  continue
-                fi
-
-                echo "${'$'}out"
-                return "${'$'}rc"
-              done
-            }
-
-            download_with_retries() {
-              local url="${'$'}1"
-              local dest="${'$'}2"
-              local tmp="${'$'}{dest}.part"
-              local tries=1
-              local i=1
-              local rc=1
-
-              rm -f "${'$'}dest" "${'$'}tmp"
-
-              while [ "${'$'}i" -le "${'$'}tries" ]; do
-                log "Downloading SymposiumRelay from link (attempt ${'$'}i/${'$'}tries)"
-
-                set +e
-                curl \
-                  -fL \
-                  --show-error \
-                  --connect-timeout 15 \
-                  --max-time 900 \
-                  -o "${'$'}tmp" \
-                  "${'$'}url"
-                rc=${'$'}?
-                set -e
-
-                if [ "${'$'}rc" -eq 0 ] && [ -s "${'$'}tmp" ]; then
-                  chmod 0750 "${'$'}tmp"
-                  mv -f "${'$'}tmp" "${'$'}dest"
-                  log "Link download complete"
-                  return 0
-                fi
-
-                if [ "${'$'}rc" -eq 0 ]; then
-                  log "Link download failed: downloaded file is empty"
-                else
-                  log "Link download failed with curl exit ${'$'}rc"
-                fi
-
-                i="${'$'}((i+1))"
-              done
-
-              rm -f "${'$'}tmp"
-              return 1
-            }
-
-            select_server_binary() {
-              if [ "${'$'}{SYMPOSIUM_FORCE_LOCAL_BINARY:-0}" != "1" ]; then
-                rm -f "${'$'}LOCAL_BINARY"
-
-                if download_with_retries "${'$'}RELAY_DOWNLOAD_URL" "${'$'}DOWNLOADED_BINARY"; then
-                  SERVER_BINARY_SOURCE="${'$'}DOWNLOADED_BINARY"
-                  return 0
-                fi
-
-                log "Link download failed; requesting app fallback binary"
-                die "RELAY_DOWNLOAD_FAILED: link download failed"
-              fi
-
-              if [ -s "${'$'}LOCAL_BINARY" ]; then
-                SERVER_BINARY_SOURCE="${'$'}LOCAL_BINARY"
-                log "Using SymposiumRelay binary uploaded by the app"
-                return 0
-              fi
-
-              die "RELAY_DOWNLOAD_FAILED: app fallback binary is not available"
-            }
-
-            gen_tls_for_ip() {
-              mkdir -p "${'$'}{TLS_DIR}"
-              chmod 700 "${'$'}{TLS_DIR}"
-
-              if [ -f "${'$'}{TLS_KEY}" ] && [ -f "${'$'}{TLS_CRT}" ]; then
-                log "TLS already exists: ${'$'}{TLS_CRT}"
-              else
-                log "Generating self-signed TLS cert for IP ${'$'}{SERVER_IP}"
-
-                openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${'$'}{TLS_KEY}"
-                chmod 600 "${'$'}{TLS_KEY}"
-
-                cat > "${'$'}{TLS_DIR}/openssl.cnf" <<EOF
-            [req]
-            distinguished_name = dn
-            x509_extensions = v3
-            prompt = no
-
-            [dn]
-            CN = ${'$'}{SERVER_IP}
-
-            [v3]
-            subjectAltName = @alt
-            keyUsage = digitalSignature, keyEncipherment
-            extendedKeyUsage = serverAuth
-
-            [alt]
-            IP.1 = ${'$'}{SERVER_IP}
-            EOF
-
-                openssl req -x509 -new -key "${'$'}{TLS_KEY}" -sha256 -days 825 -out "${'$'}{TLS_CRT}" -config "${'$'}{TLS_DIR}/openssl.cnf"
-                chmod 644 "${'$'}{TLS_CRT}"
-              fi
-            }
-
-            calc_spki_pin() {
-              local b64
-              b64="${'$'}(
-                openssl x509 -in "${'$'}{TLS_CRT}" -pubkey -noout \
-                  | openssl pkey -pubin -outform DER \
-                  | openssl dgst -sha256 -binary \
-                  | openssl enc -base64 -A
-              )"
-              echo "sha256/${'$'}{b64}"
-            }
-
-            is_uint() {
-              case "${'$'}1" in
-                ''|*[!0-9]*) return 1 ;;
-                *) return 0 ;;
-              esac
-            }
-
-            validate_udp_range() {
-              if ! is_uint "${'$'}ICE_UDP_PORT_MIN" || ! is_uint "${'$'}ICE_UDP_PORT_MAX"; then
-                die "Invalid ICE UDP port range: ${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}"
-              fi
-
-              if [ "${'$'}ICE_UDP_PORT_MIN" -lt 1 ] || [ "${'$'}ICE_UDP_PORT_MAX" -gt 65535 ] || [ "${'$'}ICE_UDP_PORT_MAX" -lt "${'$'}ICE_UDP_PORT_MIN" ]; then
-                die "Invalid ICE UDP port range: ${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}"
-              fi
-
-              ICE_UDP_PORT_RANGE="${'$'}{ICE_UDP_PORT_MIN}:${'$'}{ICE_UDP_PORT_MAX}"
-              FIREWALLD_ICE_UDP_PORT_RANGE="${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}"
-            }
-
-            firewall_warn() {
-              log "Firewall warning: ${'$'}*"
-            }
-
-            ensure_ufw_ports() {
-              if ! need_cmd ufw; then
-                return 1
-              fi
-
-              if ! ufw status 2>/dev/null | grep -qi 'Status: active'; then
-                return 1
-              fi
-
-              log "Detected active UFW; allowing SymposiumRelay ports"
-              ufw allow 443/tcp >/dev/null || firewall_warn "failed to allow 443/tcp via UFW"
-              ufw allow "${'$'}{ICE_UDP_PORT_RANGE}/udp" >/dev/null || firewall_warn "failed to allow ${'$'}{ICE_UDP_PORT_RANGE}/udp via UFW"
-              return 0
-            }
-
-            ensure_firewalld_ports() {
-              if ! need_cmd firewall-cmd; then
-                return 1
-              fi
-
-              if ! firewall-cmd --state >/dev/null 2>&1; then
-                return 1
-              fi
-
-              log "Detected active firewalld; allowing SymposiumRelay ports"
-              firewall-cmd --permanent --add-port=443/tcp >/dev/null || firewall_warn "failed to allow 443/tcp via firewalld"
-              firewall-cmd --permanent --add-port="${'$'}{FIREWALLD_ICE_UDP_PORT_RANGE}/udp" >/dev/null || firewall_warn "failed to allow ${'$'}{FIREWALLD_ICE_UDP_PORT_RANGE}/udp via firewalld"
-              firewall-cmd --reload >/dev/null || firewall_warn "failed to reload firewalld"
-              return 0
-            }
-
-            nft_input_chains() {
-              nft -a list ruleset 2>/dev/null | awk '
-                /^table / { family=${'$'}2; table=${'$'}3 }
-                /^[[:space:]]*chain / { chain=${'$'}2 }
-                /hook input/ { print family, table, chain }
-              '
-            }
-
-            ensure_nft_ports() {
-              if ! need_cmd nft; then
-                return 1
-              fi
-
-              local chains
-              chains="${'$'}(nft_input_chains || true)"
-              if [ -z "${'$'}chains" ]; then
-                return 1
-              fi
-
-              log "Detected nftables input chains; allowing SymposiumRelay ports"
-
-              local family table chain
-              while read -r family table chain; do
-                [ -n "${'$'}family" ] || continue
-                [ -n "${'$'}table" ] || continue
-                [ -n "${'$'}chain" ] || continue
-
-                if ! nft list chain "${'$'}family" "${'$'}table" "${'$'}chain" 2>/dev/null | grep -Fq 'symposium-relay-https'; then
-                  nft insert rule "${'$'}family" "${'$'}table" "${'$'}chain" tcp dport 443 accept comment "symposium-relay-https" 2>/dev/null                     || firewall_warn "failed to add nftables rule for 443/tcp in ${'$'}family ${'$'}table ${'$'}chain"
-                fi
-
-                if ! nft list chain "${'$'}family" "${'$'}table" "${'$'}chain" 2>/dev/null | grep -Fq 'symposium-relay-ice-udp-range'; then
-                  nft insert rule "${'$'}family" "${'$'}table" "${'$'}chain" udp dport "${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}" accept comment "symposium-relay-ice-udp-range" 2>/dev/null                     || firewall_warn "failed to add nftables rule for ${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}/udp in ${'$'}family ${'$'}table ${'$'}chain"
-                fi
-              done <<< "${'$'}chains"
-
-              return 0
-            }
-
-            iptables_input_active() {
-              if ! need_cmd iptables; then
-                return 1
-              fi
-
-              local rules
-              rules="${'$'}(iptables -S INPUT 2>/dev/null || true)"
-              [ -n "${'$'}rules" ] || return 1
-
-              echo "${'$'}rules" | grep -qE '^-P INPUT (DROP|REJECT)|^-A INPUT '
-            }
-
-            ensure_one_iptables_rule() {
-              local bin="${'$'}1"
-              local proto="${'$'}2"
-              local port_expr="${'$'}3"
-              local match_arg="--dport"
-
-              if ! need_cmd "${'$'}bin"; then
-                return 0
-              fi
-
-              if echo "${'$'}port_expr" | grep -q ':'; then
-                match_arg="--dports"
-                "${'$'}bin" -C INPUT -p "${'$'}proto" -m multiport "${'$'}match_arg" "${'$'}port_expr" -j ACCEPT >/dev/null 2>&1                   || "${'$'}bin" -I INPUT -p "${'$'}proto" -m multiport "${'$'}match_arg" "${'$'}port_expr" -j ACCEPT >/dev/null 2>&1                   || firewall_warn "failed to add ${'$'}bin rule for ${'$'}port_expr/${'$'}proto"
-                return 0
-              fi
-
-              "${'$'}bin" -C INPUT -p "${'$'}proto" "${'$'}match_arg" "${'$'}port_expr" -j ACCEPT >/dev/null 2>&1                 || "${'$'}bin" -I INPUT -p "${'$'}proto" "${'$'}match_arg" "${'$'}port_expr" -j ACCEPT >/dev/null 2>&1                 || firewall_warn "failed to add ${'$'}bin rule for ${'$'}port_expr/${'$'}proto"
-            }
-
-            persist_iptables_if_possible() {
-              if need_cmd netfilter-persistent; then
-                netfilter-persistent save >/dev/null 2>&1 || firewall_warn "failed to persist iptables rules via netfilter-persistent"
-                return 0
-              fi
-
-              if [ -d /etc/iptables ] && need_cmd iptables-save; then
-                iptables-save > /etc/iptables/rules.v4 2>/dev/null || firewall_warn "failed to persist IPv4 iptables rules"
-                if need_cmd ip6tables-save; then
-                  ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || firewall_warn "failed to persist IPv6 iptables rules"
-                fi
-              fi
-            }
-
-            ensure_iptables_ports() {
-              if ! iptables_input_active; then
-                return 1
-              fi
-
-              log "Detected iptables input rules; allowing SymposiumRelay ports"
-              ensure_one_iptables_rule iptables tcp 443
-              ensure_one_iptables_rule iptables udp "${'$'}ICE_UDP_PORT_RANGE"
-              ensure_one_iptables_rule ip6tables tcp 443
-              ensure_one_iptables_rule ip6tables udp "${'$'}ICE_UDP_PORT_RANGE"
-              persist_iptables_if_possible
-              return 0
-            }
-
-            ensure_firewall_ports() {
-              log "Checking host firewall rules"
-
-              local detected=0
-
-              if ensure_ufw_ports; then
-                detected=1
-              fi
-
-              if ensure_firewalld_ports; then
-                detected=1
-              fi
-
-              if [ "${'$'}detected" -eq 0 ]; then
-                if ensure_nft_ports; then
-                  detected=1
-                fi
-              fi
-
-              if [ "${'$'}detected" -eq 0 ]; then
-                if ensure_iptables_ports; then
-                  detected=1
-                fi
-              fi
-
-              if [ "${'$'}detected" -eq 0 ]; then
-                log "No active host firewall manager detected"
-              else
-                log "Firewall ports ensured: 443/tcp and ${'$'}{ICE_UDP_PORT_RANGE}/udp"
-              fi
-            }
-
-            ensure_symposium_user() {
-              if ! getent group "${'$'}{APP_GROUP}" >/dev/null 2>&1; then
-                groupadd --system "${'$'}{APP_GROUP}"
-              fi
-
-              if ! id -u "${'$'}{APP_USER}" >/dev/null 2>&1; then
-                useradd \
-                  --system \
-                  --gid "${'$'}{APP_GROUP}" \
-                  --home-dir "${'$'}{APP_DIR}" \
-                  --no-create-home \
-                  --shell /usr/sbin/nologin \
-                  "${'$'}{APP_USER}"
-              fi
-            }
-
-            prepare_app_dir() {
-              install -d -o "${'$'}{APP_USER}" -g "${'$'}{APP_GROUP}" -m 0750 "${'$'}{APP_DIR}"
-            }
-
-            ensure_admin_token() {
-              prepare_app_dir
-
-              if [ -s "${'$'}{ADMIN_TOKEN_FILE}" ]; then
-                ADMIN_TOKEN="${'$'}(tr -d '\r\n' < "${'$'}{ADMIN_TOKEN_FILE}")"
-              else
-                ADMIN_TOKEN="${'$'}(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
-                umask 077
-                printf '%s\n' "${'$'}{ADMIN_TOKEN}" > "${'$'}{ADMIN_TOKEN_FILE}"
-              fi
-
-              chown "${'$'}{APP_USER}:${'$'}{APP_GROUP}" "${'$'}{ADMIN_TOKEN_FILE}"
-              chmod 600 "${'$'}{ADMIN_TOKEN_FILE}"
-            }
-
-            log "[1/8] Detect OS"
-            ID="unknown"
-            VERSION_CODENAME=""
-            if [ -f /etc/os-release ]; then
-              . /etc/os-release
-              ID="${'$'}{ID:-unknown}"
-              VERSION_CODENAME="${'$'}{VERSION_CODENAME:-}"
-            fi
-            log "Detected OS: ${'$'}{ID} ${'$'}{VERSION_CODENAME}"
-
-            if [ "${'$'}ID" != "debian" ] && [ "${'$'}ID" != "ubuntu" ]; then
-              die "Unsupported OS: ${'$'}ID"
-            fi
-
-            apt_quiet_services
-
-            log "[2/8] Install runtime deps"
-            apt_run update
-            apt_run install -y ca-certificates curl openssl
-
-            validate_udp_range
-            log "ICE UDP port range: ${'$'}{ICE_UDP_PORT_MIN}-${'$'}{ICE_UDP_PORT_MAX}/udp"
-
-            log "[3/8] Configure firewall"
-            ensure_firewall_ports
-
-            log "[4/8] Prepare service user and admin token"
-            ensure_symposium_user
-            prepare_app_dir
-            ensure_admin_token
-
-            log "[5/8] Install symposium-server binary and service"
-            mkdir -p "${'$'}{APP_DIR}"
-            cd "${'$'}{APP_DIR}"
-
-            select_server_binary
-
-            if need_cmd systemctl; then
-              systemctl stop "${'$'}{APP_NAME}.service" 2>/dev/null || true
-            fi
-
-            rm -f "${'$'}{APP_DIR}/${'$'}{APP_NAME}"
-            rm -f "${'$'}{ROOMS_DB}" "${'$'}{ROOMS_DB}-shm" "${'$'}{ROOMS_DB}-wal" "${'$'}{ROOMS_DB}-journal"
-            rm -f "${'$'}{APP_DIR}/relay-info.json"
-
-            install -o "${'$'}{APP_USER}" -g "${'$'}{APP_GROUP}" -m 0750 "${'$'}{SERVER_BINARY_SOURCE}" "${'$'}{APP_DIR}/${'$'}{APP_NAME}"
-
-            install -o "${'$'}{APP_USER}" -g "${'$'}{APP_GROUP}" -m 0600 /dev/null "${'$'}{ROOMS_DB}"
-
-            cat > /etc/systemd/system/${'$'}{APP_NAME}.service <<SERVICE
-            [Unit]
-            Description=Symposium SFU Server
-            After=network-online.target
-            Wants=network-online.target
-
-            [Service]
-            Type=simple
-            WorkingDirectory=${'$'}{APP_DIR}
-            ExecStart=${'$'}{APP_DIR}/${'$'}{APP_NAME} --addr 127.0.0.1:3001 --admin-addr 127.0.0.1:3002 --public-ip ${'$'}{SERVER_IP} --nat1to1 ${'$'}{SERVER_IP} --rooms-db ${'$'}{ROOMS_DB} --admin-token-file ${'$'}{ADMIN_TOKEN_FILE}
-            Restart=always
-            RestartSec=2
-            User=${'$'}{APP_USER}
-            Group=${'$'}{APP_GROUP}
-            NoNewPrivileges=true
-            PrivateTmp=true
-            ProtectSystem=strict
-            ProtectHome=true
-            PrivateDevices=true
-            ReadWritePaths=${'$'}{APP_DIR}
-            CapabilityBoundingSet=
-            AmbientCapabilities=
-            LockPersonality=true
-            MemoryDenyWriteExecute=true
-            SystemCallArchitectures=native
-            Environment=SYMPOSIUM_PUBLIC_IP=${'$'}{SERVER_IP}
-            Environment=SYMPOSIUM_OPEN_ROOMS_DB=${'$'}{ROOMS_DB}
-            Environment=SYMPOSIUM_ADMIN_TOKEN_FILE=${'$'}{ADMIN_TOKEN_FILE}
-            Environment=SYMPOSIUM_ICE_UDP_PORT_MIN=${'$'}{ICE_UDP_PORT_MIN}
-            Environment=SYMPOSIUM_ICE_UDP_PORT_MAX=${'$'}{ICE_UDP_PORT_MAX}
-
-            [Install]
-            WantedBy=multi-user.target
-            SERVICE
-
-            log "[6/8] Enable and start symposium-server service"
-            if need_cmd systemctl; then
-              systemctl daemon-reload
-              systemctl enable "${'$'}{APP_NAME}.service"
-
-              if ! systemctl restart "${'$'}{APP_NAME}.service"; then
-                journalctl -u "${'$'}{APP_NAME}.service" -n 80 --no-pager || true
-                die "symposium-server failed to start"
-              fi
-
-              sleep 1
-              if ! systemctl is-active --quiet "${'$'}{APP_NAME}.service"; then
-                journalctl -u "${'$'}{APP_NAME}.service" -n 80 --no-pager || true
-                die "symposium-server is not active after start"
-              fi
-            else
-              die "systemctl is required"
-            fi
-
-            log "[7/8] Setup HTTPS/WSS via nginx"
-            apt_run update
-            apt_run install -y nginx
-
-            if need_cmd systemctl; then
-              systemctl stop apache2 2>/dev/null || true
-              systemctl disable apache2 2>/dev/null || true
-            fi
-
-            gen_tls_for_ip
-            PIN="${'$'}(calc_spki_pin)"
-            log "TLS pin: ${'$'}{PIN}"
-
-            cat > /etc/nginx/conf.d/symposium_ws_map.conf <<'MAP'
-            map ${'$'}http_upgrade ${'$'}connection_upgrade {
-              default upgrade;
-              '' close;
-            }
-            MAP
-
-            cat > /etc/nginx/sites-available/symposium.conf <<CONF
-            server {
-              listen 443 ssl http2;
-              server_name _;
-
-              ssl_certificate     ${'$'}{TLS_CRT};
-              ssl_certificate_key ${'$'}{TLS_KEY};
-
-              location /admin/ {
-                proxy_pass http://127.0.0.1:3002;
-                proxy_http_version 1.1;
-
-                proxy_set_header Host              \${'$'}host;
-                proxy_set_header X-Real-IP         \${'$'}remote_addr;
-                proxy_set_header X-Forwarded-For   \${'$'}proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto https;
-
-                proxy_read_timeout 60;
-                proxy_send_timeout 60;
-              }
-
-              location /ws {
-                proxy_pass http://127.0.0.1:3001;
-                proxy_http_version 1.1;
-
-                proxy_set_header Host              \${'$'}host;
-                proxy_set_header X-Real-IP         \${'$'}remote_addr;
-                proxy_set_header X-Forwarded-For   \${'$'}proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto https;
-
-                proxy_read_timeout 3600;
-                proxy_send_timeout 3600;
-
-                proxy_set_header Upgrade           \${'$'}http_upgrade;
-                proxy_set_header Connection        \${'$'}connection_upgrade;
-              }
-
-              location / {
-                proxy_pass http://127.0.0.1:3001;
-                proxy_http_version 1.1;
-
-                proxy_set_header Host              \${'$'}host;
-                proxy_set_header X-Real-IP         \${'$'}remote_addr;
-                proxy_set_header X-Forwarded-For   \${'$'}proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto https;
-
-                proxy_read_timeout 3600;
-                proxy_send_timeout 3600;
-
-                proxy_set_header Upgrade           \${'$'}http_upgrade;
-                proxy_set_header Connection        \${'$'}connection_upgrade;
-              }
-            }
-            CONF
-
-            rm -f /etc/nginx/sites-enabled/default || true
-            rm -f /etc/nginx/sites-enabled/symposium-relay.conf || true
-            rm -f /etc/nginx/sites-available/symposium-relay.conf || true
-            ln -sf /etc/nginx/sites-available/symposium.conf /etc/nginx/sites-enabled/symposium.conf
-
-            nginx -t
-            if need_cmd systemctl; then
-              systemctl enable --now nginx || true
-              systemctl reload nginx || systemctl restart nginx || true
-            else
-              nginx -s reload || true
-            fi
-
-            log "[8/8] Write relay-info.json + checks"
-            cat > "${'$'}{APP_DIR}/relay-info.json" <<JSON
-            {"host":"${'$'}{SERVER_IP}","httpsPort":443,"pin":"${'$'}{PIN}","adminToken":"${'$'}{ADMIN_TOKEN}","iceUdpPortMin":${'$'}{ICE_UDP_PORT_MIN},"iceUdpPortMax":${'$'}{ICE_UDP_PORT_MAX}}
-            JSON
-            chown "${'$'}{APP_USER}:${'$'}{APP_GROUP}" "${'$'}{APP_DIR}/relay-info.json"
-            chmod 600 "${'$'}{APP_DIR}/relay-info.json"
-
-            set +e
-            curl -fsS -H "X-Symposium-Admin-Token: ${'$'}{ADMIN_TOKEN}" "http://127.0.0.1:3002/admin/version" >/dev/null
-            ADMIN_RC=${'$'}?
-            curl -fsS "http://127.0.0.1:3001" >/dev/null
-            APP_RC=${'$'}?
-            set -e
-            if [ ${'$'}APP_RC -eq 0 ]; then
-              log "App responds on http://127.0.0.1:3001"
-            else
-              log "App not responding yet"
-            fi
-            if [ ${'$'}ADMIN_RC -eq 0 ]; then
-              log "Admin API token check OK"
-            else
-              log "Admin API token check failed"
-            fi
-
-            curl -kfsS "https://127.0.0.1/" >/dev/null && log "Nginx HTTPS OK" || log "Nginx HTTPS check failed"
-
-            echo "SYMPOSIUM_PIN=${'$'}{PIN}"
-            echo "SYMPOSIUM_HTTPS=https://${'$'}{SERVER_IP}"
-            echo "SYMPOSIUM_WSS=wss://${'$'}{SERVER_IP}/ws"
-
-            echo "Installation finished."
-            echo "journalctl -u ${'$'}{APP_NAME}.service -f"
-        """.trimIndent()
     }
 }
 
+private fun opensshRsaPublicKey(key: PublicKey): String {
+    val rsa = key as? RSAPublicKey ?: throw IllegalArgumentException("RSA public key required")
+    val blob = ByteArrayOutputStream().use { bytes ->
+        DataOutputStream(bytes).use { out ->
+            out.writeSshField("ssh-rsa".toByteArray(Charsets.US_ASCII))
+            out.writeSshField(rsa.publicExponent.toSshMpInt())
+            out.writeSshField(rsa.modulus.toSshMpInt())
+        }
+        bytes.toByteArray()
+    }
+    return "ssh-rsa ${Base64.encodeToString(blob, Base64.NO_WRAP)} symposium-mobile"
+}
+
+private fun DataOutputStream.writeSshField(value: ByteArray) {
+    writeInt(value.size)
+    write(value)
+}
+
+private fun BigInteger.toSshMpInt(): ByteArray = toByteArray()
+
+internal fun sshRsaKeySizeCandidates(): List<Int> = listOf(3072, 2048)
+
+internal class SshCredentialStore(context: Context) {
+    private val appContext = context.applicationContext
+    private val keyStore: KeyStore by lazy {
+        KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+    }
+
+    fun getSession(serverIp: String, login: String): KeyPair? =
+        getEntry(alias(activeAliasPrefix(), serverIp, login))
+
+    fun getLegacy(serverIp: String, login: String): KeyPair? {
+        return inactiveAliasPrefixes().firstNotNullOfOrNull { prefix ->
+            getEntry(alias(prefix, serverIp, login))
+        }
+    }
+
+    private fun getEntry(alias: String): KeyPair? {
+        val entry = keyStore.getEntry(alias, null)
+            as? KeyStore.PrivateKeyEntry
+            ?: return null
+        return KeyPair(entry.certificate.publicKey, entry.privateKey)
+    }
+
+    fun generate(serverIp: String, login: String): KeyPair {
+        val requireAuthentication = isSecretProtectionEnabled(appContext)
+        val alias = alias(
+            if (requireAuthentication) AUTHENTICATED_SSH_KEY_ALIAS_PREFIX
+            else SESSION_SSH_KEY_ALIAS_PREFIX,
+            serverIp,
+            login
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                return generateWithCompatibleSize(
+                    alias = alias,
+                    useStrongBox = true,
+                    requireAuthentication = requireAuthentication
+                )
+            } catch (_: Exception) {
+                runCatching { keyStore.deleteEntry(alias) }
+            }
+        }
+        return generateWithCompatibleSize(
+            alias = alias,
+            useStrongBox = false,
+            requireAuthentication = requireAuthentication
+        )
+    }
+
+    fun contains(serverIp: String, login: String): Boolean {
+        return keyStore.containsAlias(alias(AUTHENTICATED_SSH_KEY_ALIAS_PREFIX, serverIp, login)) ||
+            keyStore.containsAlias(alias(SESSION_SSH_KEY_ALIAS_PREFIX, serverIp, login)) ||
+            keyStore.containsAlias(alias(LEGACY_SSH_KEY_ALIAS_PREFIX, serverIp, login))
+    }
+
+    fun hasLegacy(serverIp: String, login: String): Boolean =
+        inactiveAliasPrefixes().any { prefix ->
+            keyStore.containsAlias(alias(prefix, serverIp, login))
+        }
+
+    fun delete(serverIp: String, login: String) {
+        keyStore.deleteEntry(alias(AUTHENTICATED_SSH_KEY_ALIAS_PREFIX, serverIp, login))
+        keyStore.deleteEntry(alias(SESSION_SSH_KEY_ALIAS_PREFIX, serverIp, login))
+        keyStore.deleteEntry(alias(LEGACY_SSH_KEY_ALIAS_PREFIX, serverIp, login))
+    }
+
+    fun deleteLegacy(serverIp: String, login: String) {
+        inactiveAliasPrefixes().forEach { prefix ->
+            keyStore.deleteEntry(alias(prefix, serverIp, login))
+        }
+    }
+
+    fun hasAny(): Boolean {
+        val aliases = keyStore.aliases()
+        while (aliases.hasMoreElements()) {
+            val alias = aliases.nextElement()
+            if (alias.startsWith(AUTHENTICATED_SSH_KEY_ALIAS_PREFIX) ||
+                alias.startsWith(SESSION_SSH_KEY_ALIAS_PREFIX) ||
+                alias.startsWith(LEGACY_SSH_KEY_ALIAS_PREFIX)
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun activeAliasPrefix(): String =
+        if (isSecretProtectionEnabled(appContext)) AUTHENTICATED_SSH_KEY_ALIAS_PREFIX
+        else SESSION_SSH_KEY_ALIAS_PREFIX
+
+    private fun inactiveAliasPrefixes(): List<String> =
+        if (isSecretProtectionEnabled(appContext)) {
+            listOf(SESSION_SSH_KEY_ALIAS_PREFIX, LEGACY_SSH_KEY_ALIAS_PREFIX)
+        } else {
+            listOf(AUTHENTICATED_SSH_KEY_ALIAS_PREFIX, LEGACY_SSH_KEY_ALIAS_PREFIX)
+        }
+
+    private fun generateWithCompatibleSize(
+        alias: String,
+        useStrongBox: Boolean,
+        requireAuthentication: Boolean
+    ): KeyPair {
+        var lastFailure: Exception? = null
+        sshRsaKeySizeCandidates().forEach { keySizeBits ->
+            runCatching { keyStore.deleteEntry(alias) }
+            try {
+                return generateAtSize(
+                    alias = alias,
+                    useStrongBox = useStrongBox,
+                    requireAuthentication = requireAuthentication,
+                    keySizeBits = keySizeBits
+                )
+            } catch (error: Exception) {
+                lastFailure = error
+            }
+        }
+        runCatching { keyStore.deleteEntry(alias) }
+        throw lastFailure ?: IllegalStateException("No compatible Android Keystore RSA size")
+    }
+
+    private fun generateAtSize(
+        alias: String,
+        useStrongBox: Boolean,
+        requireAuthentication: Boolean,
+        keySizeBits: Int
+    ): KeyPair {
+        val spec = KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+        )
+            .setKeySize(keySizeBits)
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+            .apply {
+                setUserAuthenticationRequired(requireAuthentication)
+                if (requireAuthentication) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        setUserAuthenticationParameters(
+                            AUTH_VALIDITY_SECONDS,
+                            KeyProperties.AUTH_BIOMETRIC_STRONG or
+                                KeyProperties.AUTH_DEVICE_CREDENTIAL
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        setUserAuthenticationValidityDurationSeconds(AUTH_VALIDITY_SECONDS)
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    if (requireAuthentication) setUnlockedDeviceRequired(true)
+                    setIsStrongBoxBacked(useStrongBox)
+                }
+            }
+            .build()
+        return KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, ANDROID_KEYSTORE).run {
+            initialize(spec)
+            generateKeyPair()
+        }
+    }
+
+    private fun alias(prefix: String, serverIp: String, login: String): String {
+        val normalized = "${serverIp.trim().lowercase()}\u0000${login.trim()}"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(normalized.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return "$prefix$digest"
+    }
+
+    companion object {
+        private const val AUTH_VALIDITY_SECONDS = 8 * 60 * 60
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val LEGACY_SSH_KEY_ALIAS_PREFIX = "symposium_ssh_admin_"
+        private const val SESSION_SSH_KEY_ALIAS_PREFIX = "symposium_ssh_session_"
+        private const val AUTHENTICATED_SSH_KEY_ALIAS_PREFIX = "symposium_ssh_authenticated_v2_"
+    }
+}
+
+private val SAFE_SSH_USERNAME = Regex("^[A-Za-z_][A-Za-z0-9_.-]{0,31}${'$'}")
+
 class InstallServersStore(context: Context) {
     private val appContext = context.applicationContext
+    private val secretCipher = AuthenticatedSecretCipher(
+        context = appContext,
+        purpose = "install-servers"
+    )
 
     private val masterKey: MasterKey by lazy {
         MasterKey.Builder(appContext)
@@ -3066,38 +3630,68 @@ class InstallServersStore(context: Context) {
     }
 
     private fun migrateLegacyIfNeeded() {
-        val already = securePrefs.getString(SECURE_KEY, null)
-        if (!already.isNullOrBlank()) return
+        val current = securePrefs.getString(SECURE_KEY, null)
+        if (!current.isNullOrBlank()) return
 
         val legacy = appContext.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
         val raw = legacy.getString(LEGACY_KEY, null) ?: return
-
-        securePrefs.edit().putString(SECURE_KEY, raw).apply()
-        legacy.edit().remove(LEGACY_KEY).apply()
+        if (securePrefs.edit().putString(SECURE_KEY, raw).commit()) {
+            legacy.edit().remove(LEGACY_KEY).apply()
+        }
     }
 
     fun load(): List<InstallServer> {
         migrateLegacyIfNeeded()
-
-        val raw = securePrefs.getString(SECURE_KEY, null) ?: return emptyList()
-        val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        val stored = securePrefs.getString(SECURE_KEY, null) ?: return emptyList()
+        val opened = secretCipher.open(stored)
+        val raw = opened.value
+        val arr = runCatching { JSONArray(raw) }.getOrNull() ?: run {
+            securePrefs.edit().clear().commit()
+            return emptyList()
+        }
 
         val out = ArrayList<InstallServer>(arr.length())
+        var legacySecretsFound = false
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
 
             val id = o.optString("id").ifBlank { UUID.randomUUID().toString() }
+            val secrets = loadServerSecrets(id)
             val name = o.optString("name")
             val ip = o.optString("ip")
             val username = o.optString("username")
-            val password = o.optString("password")
+            val password = ""
+            val sshKeyInstalled = o.optBoolean("sshKeyInstalled", false)
             val installed = o.optBoolean("installed", false)
             val sshHostKeyPin = o.optString("sshHostKeyPin").takeIf { it.isNotBlank() }
             val httpsPort = o.optInt("httpsPort", -1).takeIf { it > 0 }
             val relayTlsPin = o.optString("relayTlsPin").takeIf { it.isNotBlank() }
-            val adminToken = o.optString("adminToken").takeIf { it.isNotBlank() }
-            val deploymentProfile = deploymentProfileFromJson(o.optJSONObject("deploymentProfile"))
-            val openRooms = parseOpenRoomsArray(o.optJSONArray("openRooms") ?: JSONArray())
+            val legacyAdminToken = o.optString("adminToken").takeIf { it.isNotBlank() }
+            val adminToken = secrets?.optString("adminToken")?.takeIf { it.isNotBlank() }
+                ?: legacyAdminToken
+            val legacyProfile = deploymentProfileFromJson(o.optJSONObject("deploymentProfile"))
+            val profileAdminToken = secrets?.optString("deploymentAdminToken")
+                ?.takeIf { it.isNotBlank() }
+                ?: legacyProfile?.adminToken
+            val deploymentProfile = legacyProfile?.copy(adminToken = profileAdminToken.orEmpty())
+            val relayCapacity = o.optJSONObject("relayCapacity")?.let(::relayCapacityFromJson)
+                ?: deploymentProfile?.relayCapacity
+                ?: RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD)
+            val persistedRooms = parseOpenRoomsArray(
+                o.optJSONArray("openRooms") ?: JSONArray(),
+                requireRoomInstance = false
+            )
+            val moderatorKeys = secrets?.optJSONArray("moderatorKeys")
+                ?.let(::moderatorKeysByRoomInstance)
+                .orEmpty()
+            val openRooms = persistedRooms.map { room ->
+                val moderatorKey = moderatorKeys[roomSecretIdentity(room)]
+                    ?: room.moderatorKey
+                room.copy(
+                    moderatorKey = moderatorKey,
+                    moderatorKeyAvailable = room.moderatorKeyAvailable || moderatorKey.isNotBlank()
+                )
+            }
             val relayVersion = o.optString("relayVersion").takeIf { it.isNotBlank() }
             val relayVersionState = runCatching {
                 RelayVersionState.valueOf(o.optString("relayVersionState"))
@@ -3111,44 +3705,209 @@ class InstallServersStore(context: Context) {
                 ip = ip,
                 username = username,
                 password = password,
+                sshKeyInstalled = sshKeyInstalled,
                 installed = installed,
                 sshHostKeyPin = sshHostKeyPin,
                 httpsPort = httpsPort,
                 relayTlsPin = relayTlsPin,
                 adminToken = adminToken,
+                adminTokenAvailable = o.optBoolean(
+                    "adminTokenAvailable",
+                    !adminToken.isNullOrBlank()
+                ) || !adminToken.isNullOrBlank(),
                 deploymentProfile = deploymentProfile,
+                relayCapacity = relayCapacity,
                 openRooms = openRooms,
                 relayVersion = relayVersion,
                 relayVersionState = relayVersionState
             )
+            legacySecretsFound = legacySecretsFound ||
+                o.optString("password").isNotBlank() ||
+                legacyAdminToken != null ||
+                legacyProfile?.adminToken?.isNotBlank() == true ||
+                persistedRooms.any { it.moderatorKey.isNotBlank() }
         }
-        return out
+        if (opened.requiresMigration || legacySecretsFound) {
+            save(out)
+        }
+        return out.map(::redactForUi)
+    }
+
+    private fun redactForUi(server: InstallServer): InstallServer = server.copy(
+        password = "",
+        adminToken = null,
+        adminTokenAvailable = server.adminTokenAvailable || !server.adminToken.isNullOrBlank(),
+        deploymentProfile = server.deploymentProfile?.copy(adminToken = ""),
+        openRooms = server.openRooms.map { room ->
+            room.copy(
+                moderatorKey = "",
+                moderatorKeyAvailable = room.moderatorKeyAvailable || room.moderatorKey.isNotBlank()
+            )
+        }
+    )
+
+    fun readAdminToken(serverId: String): String? = loadServerSecrets(serverId)
+        ?.optString("adminToken")
+        ?.takeIf(String::isNotBlank)
+
+    fun readModeratorKey(serverId: String, room: OpenRoomInfo): String? {
+        val values = loadServerSecrets(serverId)?.optJSONArray("moderatorKeys") ?: return null
+        return moderatorKeysByRoomInstance(values)[roomSecretIdentity(room)]?.takeIf(String::isNotBlank)
+    }
+
+    fun hydrateDeploymentProfile(server: InstallServer): DeploymentProfile? {
+        val profile = server.deploymentProfile ?: return null
+        val token = loadServerSecrets(server.id)
+            ?.optString("deploymentAdminToken")
+            ?.takeIf(String::isNotBlank)
+            .orEmpty()
+        return profile.copy(adminToken = token)
+    }
+
+    private fun loadServerSecrets(id: String): JSONObject? {
+        val stored = securePrefs.getString(serverSecretsKey(id), null) ?: return null
+        val opened = secretCipher.open(stored)
+        val parsed = runCatching { JSONObject(opened.value) }.getOrNull() ?: return null
+        if (opened.requiresMigration) {
+            check(
+                securePrefs.edit()
+                    .putString(serverSecretsKey(id), secretCipher.seal(parsed.toString()))
+                    .commit()
+            ) { "Unable to migrate server credentials" }
+        }
+        return parsed
+    }
+
+    private fun moderatorKeysByRoomInstance(values: JSONArray): Map<String, String> {
+        val result = LinkedHashMap<String, String>()
+        for (index in 0 until values.length()) {
+            val value = values.optJSONObject(index) ?: continue
+            val room = OpenRoomInfo(
+                name = value.optString("room"),
+                roomInstance = value.optString("roomInstance")
+            )
+            val moderatorKey = value.optString("moderatorKey")
+            if (room.name.isNotBlank() && moderatorKey.isNotBlank()) {
+                result[roomSecretIdentity(room)] = moderatorKey
+            }
+        }
+        return result
+    }
+
+    private fun roomSecretIdentity(room: OpenRoomInfo): String =
+        "${room.name}\u0000${room.roomInstance}"
+
+    private fun serverSecretsKey(id: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(id.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return "$SERVER_SECRETS_PREFIX$digest"
+    }
+
+    fun hasEncryptedSecrets(): Boolean {
+        migrateLegacyIfNeeded()
+        if (securePrefs.all.any { (key, value) ->
+                key.startsWith(SERVER_SECRETS_PREFIX) &&
+                    value is String &&
+                    secretCipher.isProtected(value)
+            }
+        ) return true
+        val raw = securePrefs.getString(SECURE_KEY, null) ?: return false
+        if (secretCipher.isProtected(raw)) return true
+        val servers = runCatching { JSONArray(raw) }.getOrNull() ?: return false
+
+        for (index in 0 until servers.length()) {
+            val server = servers.optJSONObject(index) ?: continue
+            if (server.optString("password").isNotBlank()) return true
+            if (server.optString("adminToken").isNotBlank()) return true
+            if (server.optJSONObject("deploymentProfile")
+                    ?.optString("adminToken")
+                    ?.isNotBlank() == true
+            ) {
+                return true
+            }
+
+            val rooms = server.optJSONArray("openRooms") ?: continue
+            for (roomIndex in 0 until rooms.length()) {
+                val room = rooms.optJSONObject(roomIndex) ?: continue
+                if (room.optString("moderator_key").isNotBlank() ||
+                    room.optString("moderatorKey").isNotBlank()
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     fun save(servers: List<InstallServer>) {
         val arr = JSONArray()
+        val editor = securePrefs.edit()
+        val activeSecretKeys = HashSet<String>()
         servers.forEach { s ->
+            val existingSecrets = loadServerSecrets(s.id)
+            val existingModeratorKeys = existingSecrets?.optJSONArray("moderatorKeys")
+                ?.let(::moderatorKeysByRoomInstance)
+                .orEmpty()
+            val adminToken = s.adminToken?.takeIf(String::isNotBlank)
+                ?: existingSecrets?.optString("adminToken")?.takeIf(String::isNotBlank)
+            val deploymentAdminToken = s.deploymentProfile?.adminToken?.takeIf(String::isNotBlank)
+                ?: existingSecrets?.optString("deploymentAdminToken")?.takeIf(String::isNotBlank)
             val o = JSONObject()
                 .put("id", s.id)
                 .put("name", s.name)
                 .put("ip", s.ip)
                 .put("username", s.username)
-                .put("password", s.password)
+                .put("sshKeyInstalled", s.sshKeyInstalled)
                 .put("installed", s.installed)
+                .put("adminTokenAvailable", s.adminTokenAvailable || !adminToken.isNullOrBlank())
 
             s.sshHostKeyPin?.let { o.put("sshHostKeyPin", it) }
             s.httpsPort?.let { o.put("httpsPort", it) }
             s.relayTlsPin?.let { o.put("relayTlsPin", it) }
-            s.adminToken?.let { o.put("adminToken", it) }
-            s.deploymentProfile?.let { o.put("deploymentProfile", deploymentProfileToJson(it)) }
+            s.deploymentProfile?.let {
+                o.put("deploymentProfile", deploymentProfileToJson(it, includeAdminToken = false))
+            }
+            o.put("relayCapacity", relayCapacityToJson(s.relayCapacity))
             s.relayVersion?.let { o.put("relayVersion", it) }
             o.put("relayVersionState", s.relayVersionState.name)
-            o.put("openRooms", openRoomsToJsonArray(s.openRooms))
+            o.put("openRooms", openRoomsToJsonArray(s.openRooms, includeModeratorKeys = false))
 
             arr.put(o)
+
+            val moderatorKeys = JSONArray()
+            s.openRooms.forEach { room ->
+                val moderatorKey = room.moderatorKey.takeIf(String::isNotBlank)
+                    ?: existingModeratorKeys[roomSecretIdentity(room)]
+                if (!moderatorKey.isNullOrBlank()) {
+                    moderatorKeys.put(
+                        JSONObject()
+                            .put("room", room.name)
+                            .put("roomInstance", room.roomInstance)
+                            .put("moderatorKey", moderatorKey)
+                    )
+                }
+            }
+            val secrets = JSONObject()
+                .put("adminToken", adminToken.orEmpty())
+                .put("deploymentAdminToken", deploymentAdminToken.orEmpty())
+                .put("moderatorKeys", moderatorKeys)
+            val secretKey = serverSecretsKey(s.id)
+            activeSecretKeys += secretKey
+            editor.putString(secretKey, secretCipher.seal(secrets.toString()))
         }
 
-        securePrefs.edit().putString(SECURE_KEY, arr.toString()).apply()
+        securePrefs.all.keys
+            .filter { it.startsWith(SERVER_SECRETS_PREFIX) && it !in activeSecretKeys }
+            .forEach(editor::remove)
+
+        check(
+            editor
+                .putString(SECURE_KEY, secretCipher.seal(arr.toString()))
+                .commit()
+        ) {
+            "Unable to store server settings"
+        }
     }
 
     fun upsert(server: InstallServer): List<InstallServer> {
@@ -3156,13 +3915,13 @@ class InstallServersStore(context: Context) {
         val idx = list.indexOfFirst { it.id == server.id }
         if (idx >= 0) list[idx] = server else list.add(server)
         save(list)
-        return list
+        return load()
     }
 
     fun delete(id: String): List<InstallServer> {
         val list = load().filterNot { it.id == id }
         save(list)
-        return list
+        return load()
     }
 
     companion object {
@@ -3170,5 +3929,6 @@ class InstallServersStore(context: Context) {
         private const val LEGACY_KEY = "servers"
         private const val SECURE_PREFS_NAME = "install_servers_secure"
         private const val SECURE_KEY = "servers_json"
+        private const val SERVER_SECRETS_PREFIX = "server_secrets_"
     }
 }

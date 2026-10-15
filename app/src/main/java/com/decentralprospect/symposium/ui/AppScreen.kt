@@ -1,8 +1,6 @@
 package com.decentralprospect.symposium
 
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -22,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
@@ -32,12 +31,14 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -49,6 +50,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Density
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -56,6 +58,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -65,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,23 +79,31 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import androidx.compose.foundation.layout.height
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 
 @Composable
 internal fun AppScreen(
     appVersion: String,
     expectedRelayVersion: String = appVersion,
     reconnectMode: Boolean,
+    pictureInPictureMode: Boolean = false,
     telemetryEnabled: Boolean = false,
-    telemetryPromptShown: Boolean = true,
+    welcomeNewsPromptVisible: Boolean = false,
+    secretProtectionEnabled: Boolean = true,
+    secretProtectionChoicePromptVisible: Boolean = false,
     themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     appLanguage: AppLanguage = AppLanguage.SYSTEM,
     onThemeModeChange: (AppThemeMode) -> Unit = {},
     onAppLanguageChange: (AppLanguage) -> Unit = {},
-    onTelemetryConsentResult: (Boolean) -> Unit = {},
     onTelemetryEnabledChange: (Boolean) -> Unit = {},
+    onWelcomeNewsPromptDismiss: () -> Unit = {},
+    onSecretProtectionEnabledChange: (Boolean) -> Unit = {},
+    onInitialSecretProtectionChoice: (Boolean) -> Unit = {},
+    onAdminSessionAccess: () -> Boolean,
     onRequestBind: (UiBinder) -> Unit,
-    initialConnectLink: String? = null,
-    onConnect: (String, String, String, String, String, String) -> Unit,
+    onConnect: (String, String, String, String, String, String, String) -> Unit,
     onCancelReconnect: () -> Unit,
     onDisconnect: () -> Unit,
     onToggleSpeaker: () -> Boolean,
@@ -106,11 +118,15 @@ internal fun AppScreen(
     onMutePeer: (String) -> Unit = {},
     onUnmutePeer: (String) -> Unit = {},
     onSetMuteAll: (Boolean) -> Unit = {},
-    onInstall: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, logger: suspend (String) -> Unit) -> RemoteInstaller.InstallResult,
+    onInstall: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, relayCapacity: RelayCapacityConfig, logger: suspend (String) -> Unit) -> RemoteInstaller.InstallResult,
     onRemoveRelay: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, logger: suspend (String) -> Unit) -> RemoteInstaller.RelayRemovalResult,
     onObserveSshHostKeyPin: suspend (ip: String) -> String,
+    onEnrollSshKey: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?) -> Unit,
+    onDeleteSshKey: (ip: String, login: String) -> Unit,
     onProbeServer: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?) -> RemoteInstaller.ProbeResult,
     onSetRoomOpenState: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, open: Boolean) -> RemoteInstaller.RoomAdminResult,
+    onCreateRoom: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, muteAllByDefault: Boolean, admitWithoutApproval: Boolean) -> RemoteInstaller.RoomAdminResult,
+    onSetRoomSettings: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, muteAllByDefault: Boolean, admitWithoutApproval: Boolean) -> RemoteInstaller.RoomAdminResult,
     onRotateModeratorKey: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String) -> RemoteInstaller.RoomAdminResult,
     onFetchOpenRooms: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?) -> RemoteInstaller.RoomAdminResult,
     onFetchRelayVersion: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?) -> RemoteInstaller.RelayVersionResult,
@@ -118,7 +134,8 @@ internal fun AppScreen(
     onLowerPeerHand: (String) -> Unit = {},
     onSetMicAudioEnabled: (Boolean) -> Unit = {},
     initialAccessibilityFontScale: AccessibilityFontScale = AccessibilityFontScale.SYSTEM,
-    onAccessibilityFontScaleChange: (AccessibilityFontScale) -> Unit = {}
+    onAccessibilityFontScaleChange: (AccessibilityFontScale) -> Unit = {},
+    checkForAppUpdate: suspend (String) -> String? = AppUpdateChecker::findAvailableVersion
 ) {
     val context = LocalContext.current
     val platformDensity = LocalDensity.current
@@ -133,6 +150,8 @@ internal fun AppScreen(
     var pipOffsetY by remember { mutableStateOf(0f) }
     var pipExpanded by remember { mutableStateOf(false) }
     var pinnedPeerId by remember { mutableStateOf<String?>(null) }
+    var minimizedCallPreviewVisible by remember { mutableStateOf(true) }
+    var wasInPictureInPictureMode by remember { mutableStateOf(false) }
 
     var connectLink by remember { mutableStateOf("") }
     var usernameInput by remember { mutableStateOf("") }
@@ -142,15 +161,20 @@ internal fun AppScreen(
     val homeScope = rememberCoroutineScope()
     val homeServersStore = remember(context) { InstallServersStore(context) }
     val conferenceE2eeSecrets = remember(context) { ConferenceE2eeSecretStore(context) }
+    val relayTlsPinTrustStore = remember(context) { RelayTlsPinTrustStore(context) }
     val homeServers = remember { mutableStateListOf<InstallServer>() }
-    var homeServersLoaded by remember { mutableStateOf(false) }
+    val homeVersionCheckTokens = remember { mutableStateMapOf<String, String>() }
+    val homeVersionsChecking = homeVersionCheckTokens.isNotEmpty()
+    var acceptedInvitationTlsPin by remember { mutableStateOf<AcceptedInvitationTlsPin?>(null) }
+    var pendingInvitationTrust by remember { mutableStateOf<PendingInvitationTrust?>(null) }
+    var relayTlsPinTrustRevision by remember { mutableStateOf(0) }
     var showConnectDialog by remember { mutableStateOf(false) }
     var showCreateMeetingDialog by remember { mutableStateOf(false) }
     var showHomeServerGuideDialog by remember { mutableStateOf(false) }
     var showHomeAddServerDialog by remember { mutableStateOf(false) }
     var pendingHomeSshHostKeyTrust by remember { mutableStateOf<PendingHomeSshHostKeyTrust?>(null) }
     var homeQrDialogLink by remember { mutableStateOf<String?>(null) }
-    var homeQrDialogTitle by remember { mutableStateOf("QR-код") }
+    var homeQrDialogTitle by remember { mutableStateOf(tr(TextId.QR_CODE)) }
 
     var homeAddIp by remember { mutableStateOf("") }
     var homeAddUser by remember { mutableStateOf("") }
@@ -162,6 +186,7 @@ internal fun AppScreen(
     var selectedHomeInstallServerId by remember { mutableStateOf<String?>(null) }
     var homeInstallLoading by remember { mutableStateOf(false) }
     var homeInstallError by remember { mutableStateOf<String?>(null) }
+    var homeInstallReturnToCreateRoom by remember { mutableStateOf(false) }
 
     var selectedHomeCreateServerId by remember { mutableStateOf<String?>(null) }
     var homeCreateRoomName by remember { mutableStateOf("") }
@@ -170,8 +195,11 @@ internal fun AppScreen(
 
     var selectedHomeMeetingServerId by remember { mutableStateOf<String?>(null) }
     var selectedHomeMeetingRoomName by remember { mutableStateOf<String?>(null) }
+    var homeEditMuteAllByDefault by remember { mutableStateOf(false) }
+    var homeEditAdmitWithoutApproval by remember { mutableStateOf(false) }
     var confirmHomeCloseMeeting by remember { mutableStateOf(false) }
     var confirmHomeModeratorLinkRotation by remember { mutableStateOf(false) }
+    var confirmHomeE2eeKeyRotation by remember { mutableStateOf(false) }
     var homeServersRefreshing by remember { mutableStateOf(false) }
 
     var status by remember { mutableStateOf("offline") }
@@ -200,6 +228,18 @@ internal fun AppScreen(
 
     val pendingLobbyIds = pendingLobbyState.map { it.peerId }.toSet()
 
+    val rootView = LocalView.current
+    val keepScreenOn = inCallUi || connected || lobbyWaiting || connectingToRoom || reconnectMode
+    DisposableEffect(rootView, keepScreenOn) {
+        val previousValue = rootView.keepScreenOn
+        rootView.keepScreenOn = keepScreenOn
+        onDispose {
+            if (rootView.keepScreenOn == keepScreenOn) {
+                rootView.keepScreenOn = previousValue
+            }
+        }
+    }
+
     LaunchedEffect(pendingLobbyIds) {
         dismissedModeratorBubblePeerIds =
             if (pendingLobbyIds.isEmpty()) {
@@ -211,39 +251,95 @@ internal fun AppScreen(
 
     val peersState = remember { mutableStateListOf<PeerStatus>() }
     var currentScreen by remember { mutableStateOf(RootScreen.HOME) }
-    var serversRefreshNonce by remember { mutableStateOf(0) }
     var callViewMode by remember { mutableStateOf(CallViewMode.FOCUS) }
     var availableUpdateVersion by rememberSaveable { mutableStateOf<String?>(null) }
     var updateNotificationDismissed by rememberSaveable { mutableStateOf(false) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var lastBackPressAt by remember { mutableStateOf(0L) }
 
-    val parsedConnectLink = remember(connectLink) { parseConnectLink(connectLink) }
+    val parsedConnectLink = remember(connectLink) { parseInvitationToken(connectLink) }
+    val connectLinkVersionMismatch = remember(connectLink) {
+        invitationTokenRequiredVersionMismatch(connectLink)
+    }
+    val connectLinkError = connectLinkVersionMismatch?.let { requiredVersion ->
+        tr(TextId.REQUIRED_CLIENT_VERSION, requiredVersion)
+    }
+    val parsedRelayEndpoint = remember(parsedConnectLink?.ip) {
+        parsedConnectLink?.ip?.let(::parseRelayEndpoint)
+    }
+    val installedRelayTlsPin = parsedRelayEndpoint?.let { endpoint ->
+        homeServers.firstNotNullOfOrNull { server ->
+            val parsedServerEndpoint = parseRelayEndpoint(server.ip)
+            val serverEndpoint = server.httpsPort?.let { port ->
+                parsedServerEndpoint?.copy(port = port)
+            } ?: parsedServerEndpoint
+            server.relayTlsPin?.takeIf { serverEndpoint == endpoint }
+        }
+    }
+    val invitationTlsTrust = remember(
+        parsedConnectLink,
+        parsedRelayEndpoint,
+        installedRelayTlsPin,
+        acceptedInvitationTlsPin,
+        relayTlsPinTrustRevision
+    ) {
+        val payload = parsedConnectLink
+        val endpoint = parsedRelayEndpoint
+        if (payload == null || endpoint == null) {
+            null
+        } else {
+            val savedPin = relayTlsPinTrustStore.get(endpoint) ?: installedRelayTlsPin
+            val replacementAccepted = acceptedInvitationTlsPin?.let { accepted ->
+                accepted.endpoint == endpoint && accepted.pin == payload.tlsPin
+            } == true
+            runCatching {
+                assessInvitationTlsTrust(
+                    endpoint = endpoint,
+                    presentedPin = payload.tlsPin,
+                    savedPin = savedPin,
+                    changedPinAccepted = replacementAccepted
+                )
+            }.getOrNull()
+        }
+    }
     val selectedHomeCreateServer = homeServers.firstOrNull { it.id == selectedHomeCreateServerId }
     val selectedHomeInstallServer = homeServers.firstOrNull { it.id == selectedHomeInstallServerId }
     val selectedHomeMeetingServer = homeServers.firstOrNull { it.id == selectedHomeMeetingServerId }
     val selectedHomeMeetingRoom = selectedHomeMeetingServer?.openRooms?.firstOrNull { it.name == selectedHomeMeetingRoomName }
 
     fun loadHomeServersFromStore() {
+        val loaded = runCatching { homeServersStore.load() }.getOrElse { return }
         homeServers.clear()
-        homeServers.addAll(homeServersStore.load())
-        homeServersLoaded = true
+        homeServers.addAll(loaded)
     }
 
     fun persistHomeServers() {
         homeServersStore.save(homeServers)
+        val redacted = homeServersStore.load()
+        homeServers.clear()
+        homeServers.addAll(redacted)
     }
+
+    suspend fun <T> withAdminOperation(block: suspend () -> T): T {
+        check(onAdminSessionAccess()) { tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED) }
+        return block()
+    }
+
+    fun Throwable.isSpkiPinMismatch(): Boolean =
+        generateSequence(this) { it.cause }
+            .any { it.message?.contains("SPKI pin mismatch", ignoreCase = true) == true }
 
     fun updateHomeServer(serverId: String, transform: (InstallServer) -> InstallServer) {
         val index = homeServers.indexOfFirst { it.id == serverId }
         if (index >= 0) {
-            homeServers[index] = transform(homeServers[index])
-            persistHomeServers()
+            val redacted = homeServersStore.upsert(transform(homeServers[index]))
+            homeServers.clear()
+            homeServers.addAll(redacted)
         }
     }
 
     fun homeRelayVersionStateFor(actualVersion: String): RelayVersionState {
-        return if (actualVersion.trim() == expectedRelayVersion.trim()) {
+        return if (canonicalVersion(actualVersion) == canonicalVersion(expectedRelayVersion)) {
             RelayVersionState.CURRENT
         } else {
             RelayVersionState.OUTDATED
@@ -251,9 +347,8 @@ internal fun AppScreen(
     }
 
     fun copyHomeValue(label: String, value: String) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(context, tr("Скопировано"), Toast.LENGTH_SHORT).show()
+        copySensitiveText(context, label, value)
+        Toast.makeText(context, tr(TextId.COPIED), Toast.LENGTH_SHORT).show()
     }
 
     fun clearHomeAddServerForm() {
@@ -267,6 +362,7 @@ internal fun AppScreen(
     fun clearConnectForm() {
         connectLink = ""
         usernameInput = ""
+        acceptedInvitationTlsPin = null
     }
 
     suspend fun syncHomeServer(server: InstallServer) {
@@ -275,17 +371,17 @@ internal fun AppScreen(
         }
 
         val hasHttpsCredentials =
-            !server.relayTlsPin.isNullOrBlank() && !server.adminToken.isNullOrBlank()
+            !server.relayTlsPin.isNullOrBlank() && server.adminTokenAvailable
         val directVersionResult = if (hasHttpsCredentials) {
             runCatching {
-                onFetchRelayVersion(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken)
+                onFetchRelayVersion(server.ip, server.httpsPort, server.relayTlsPin, homeServersStore.readAdminToken(server.id))
             }
         } else {
             Result.failure(IllegalStateException("Relay credentials are not synchronized yet"))
         }
 
         if (directVersionResult.isSuccess) {
-            val version = directVersionResult.getOrThrow().version.trim()
+            val version = canonicalVersion(directVersionResult.getOrThrow().version)
             updateHomeServer(server.id) { current ->
                 current.copy(
                     installed = true,
@@ -295,7 +391,7 @@ internal fun AppScreen(
             }
 
             runCatching {
-                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken)
+                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, homeServersStore.readAdminToken(server.id))
             }.onSuccess { result ->
                 updateHomeServer(server.id) { current ->
                     current.copy(
@@ -371,13 +467,14 @@ internal fun AppScreen(
                 httpsPort = relayInfo?.httpsPort ?: current.httpsPort,
                 adminToken = relayInfo?.adminToken ?: current.adminToken,
                 deploymentProfile = probed.deploymentProfile ?: current.deploymentProfile,
+                relayCapacity = probed.deploymentProfile?.relayCapacity ?: current.relayCapacity,
                 relayVersionState = RelayVersionState.UNKNOWN
             )
         }
 
         val discoveredPin = relayInfo?.pin ?: server.relayTlsPin
         val discoveredPort = relayInfo?.httpsPort ?: server.httpsPort
-        val discoveredToken = relayInfo?.adminToken ?: server.adminToken
+        val discoveredToken = relayInfo?.adminToken ?: homeServersStore.readAdminToken(server.id)
         if (discoveredPin.isNullOrBlank() || discoveredToken.isNullOrBlank()) return
 
         runCatching {
@@ -386,7 +483,7 @@ internal fun AppScreen(
             updateHomeServer(server.id) { current ->
                 current.copy(
                     installed = true,
-                    relayVersion = info.version.trim(),
+                    relayVersion = canonicalVersion(info.version),
                     relayVersionState = homeRelayVersionStateFor(info.version)
                 )
             }
@@ -407,7 +504,65 @@ internal fun AppScreen(
     }
 
     fun refreshHomeServer(server: InstallServer) {
-        homeScope.launch { syncHomeServer(server) }
+        homeScope.launch {
+            runCatching { withAdminOperation { syncHomeServer(server) } }
+                .onFailure {
+                    Toast.makeText(
+                        context,
+                        trExternal(it.message ?: tr(TextId.COULD_NOT_REFRESH_THE_SERVER)),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+        }
+    }
+
+    fun checkHomeRelayVersion(server: InstallServer) {
+        if (!server.installed ||
+            server.relayTlsPin.isNullOrBlank() ||
+            !server.adminTokenAvailable
+        ) {
+            return
+        }
+
+        val token = UUID.randomUUID().toString()
+        homeVersionCheckTokens[server.id] = token
+        val previousVersion = server.relayVersion
+        val previousState = server.relayVersionState
+
+        homeScope.launch {
+            val result = runCatching {
+                onFetchRelayVersion(
+                    server.ip,
+                    server.httpsPort,
+                    server.relayTlsPin,
+                    homeServersStore.readAdminToken(server.id)
+                )
+            }
+            if (homeVersionCheckTokens[server.id] != token) return@launch
+            homeVersionCheckTokens.remove(server.id)
+            updateHomeServer(server.id) { current ->
+                result.fold(
+                    onSuccess = { info ->
+                        val version = canonicalVersion(info.version)
+                        current.copy(
+                            installed = true,
+                            relayVersion = version,
+                            relayVersionState = homeRelayVersionStateFor(version)
+                        )
+                    },
+                    onFailure = {
+                        current.copy(
+                            relayVersion = previousVersion,
+                            relayVersionState = previousState
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    fun checkHomeRelayVersions() {
+        homeServers.toList().forEach(::checkHomeRelayVersion)
     }
 
     fun refreshHomeServers() {
@@ -415,13 +570,66 @@ internal fun AppScreen(
         homeServersRefreshing = true
         loadHomeServersFromStore()
         val snapshot = homeServers.toList()
+        // A legacy password may be present only in memory long enough to replace it with a key.
+        // Saving immediately strips every password from the encrypted store.
+        persistHomeServers()
         if (snapshot.isEmpty()) {
+            homeServersRefreshing = false
+            return
+        }
+        val needsProtectedWork = snapshot.any { server ->
+            server.sshKeyInstalled ||
+                (!server.sshKeyInstalled &&
+                    server.password.isNotBlank() &&
+                    !server.sshHostKeyPin.isNullOrBlank())
+        }
+        if (!needsProtectedWork) {
             homeServersRefreshing = false
             return
         }
         homeScope.launch {
             try {
-                snapshot.forEach { server -> syncHomeServer(server) }
+                withAdminOperation {
+                    var migrationFailures = 0
+                    val prepared = snapshot.map { server ->
+                        val keyInstalled = if (
+                            !server.sshKeyInstalled &&
+                            server.password.isNotBlank() &&
+                            !server.sshHostKeyPin.isNullOrBlank()
+                        ) {
+                            runCatching {
+                                onEnrollSshKey(
+                                    server.ip,
+                                    server.username,
+                                    server.password,
+                                    server.sshHostKeyPin
+                                )
+                            }.isSuccess.also { if (!it) migrationFailures++ }
+                        } else {
+                            server.sshKeyInstalled
+                        }
+                        server.copy(password = "", sshKeyInstalled = keyInstalled)
+                    }
+                    prepared.forEach { preparedServer ->
+                        val index = homeServers.indexOfFirst { it.id == preparedServer.id }
+                        if (index >= 0) homeServers[index] = preparedServer
+                    }
+                    persistHomeServers()
+                    if (migrationFailures > 0) {
+                        Toast.makeText(
+                            context,
+                            tr(TextId.THE_OLD_PASSWORD_COULD_NOT_BE_REPLACED_WITH_AN_SSH_KEY_FOR_SOME_SERVERS_),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    prepared.filter { it.sshKeyInstalled }.forEach { server -> syncHomeServer(server) }
+                }
+            } catch (error: Exception) {
+                Toast.makeText(
+                    context,
+                    trExternal(error.message ?: tr(TextId.COULD_NOT_REFRESH_THE_SERVERS)),
+                    Toast.LENGTH_SHORT
+                ).show()
             } finally {
                 homeServersRefreshing = false
             }
@@ -435,17 +643,17 @@ internal fun AppScreen(
         val user = homeAddUser.trim()
 
         if (ip.isBlank() || user.isBlank() || homeAddPassword.isBlank()) {
-            homeAddError = "Укажите IP, логин и пароль"
+            homeAddError = tr(TextId.ENTER_THE_IP_ADDRESS_LOGIN_AND_PASSWORD)
             return
         }
 
         if (!isValidIpAddress(ip)) {
-            homeAddError = "Укажите корректный IP адрес"
+            homeAddError = tr(TextId.ENTER_A_VALID_IP_ADDRESS)
             return
         }
 
         if (homeServers.any { it.ip == ip }) {
-            homeAddError = "Этот сервер уже добавлен"
+            homeAddError = tr(TextId.THIS_SERVER_HAS_ALREADY_BEEN_ADDED)
             return
         }
 
@@ -453,7 +661,7 @@ internal fun AppScreen(
         homeAddLoading = true
         homeScope.launch {
             val observedPin = runCatching { onObserveSshHostKeyPin(ip) }.getOrElse {
-                homeAddError = it.message ?: "Не удалось получить SSH-ключ сервера"
+                homeAddError = it.message ?: tr(TextId.COULD_NOT_RETRIEVE_THE_SERVER_SSH_KEY)
                 homeAddLoading = false
                 return@launch
             }
@@ -473,47 +681,72 @@ internal fun AppScreen(
         homeAddLoading = true
         homeAddError = null
         homeScope.launch {
-            val probe = runCatching {
-                onProbeServer(trust.ip, trust.username, trust.password, trust.observedPin)
-            }
+            runCatching {
+                withAdminOperation {
+                    val keyEnrollment = runCatching {
+                        onEnrollSshKey(trust.ip, trust.username, trust.password, trust.observedPin)
+                    }
+                    keyEnrollment.getOrElse {
+                        homeAddError = it.message ?: tr(TextId.COULD_NOT_CONFIGURE_SSH_KEY_ACCESS)
+                        homeAddLoading = false
+                        pendingHomeSshHostKeyTrust = null
+                        showHomeAddServerDialog = true
+                        return@withAdminOperation
+                    }
 
-            val probed = probe.getOrElse {
-                homeAddError = it.message ?: "Ошибка SSH-аутентификации: неверный логин или пароль"
+                    val probe = runCatching {
+                        onProbeServer(trust.ip, trust.username, "", trust.observedPin)
+                    }
+                    val probed = probe.getOrElse {
+                        homeAddError = it.message ?: tr(TextId.COULD_NOT_CONNECT_TO_THE_SERVER)
+                        homeAddLoading = false
+                        pendingHomeSshHostKeyTrust = null
+                        showHomeAddServerDialog = true
+                        return@withAdminOperation
+                    }
+
+                    val newServer = InstallServer(
+                        id = UUID.randomUUID().toString(),
+                        name = trust.ip,
+                        ip = trust.ip,
+                        username = trust.username,
+                        password = "",
+                        sshKeyInstalled = true,
+                        installed = probed.installed,
+                        sshHostKeyPin = trust.observedPin,
+                        httpsPort = probed.relayInfo?.httpsPort,
+                        relayTlsPin = probed.relayInfo?.pin,
+                        adminToken = probed.relayInfo?.adminToken,
+                        deploymentProfile = probed.deploymentProfile,
+                        relayCapacity = probed.deploymentProfile?.relayCapacity
+                            ?: RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD),
+                        openRooms = probed.openRooms,
+                        relayVersionState = if (probed.installed) RelayVersionState.UNKNOWN else RelayVersionState.NOT_INSTALLED
+                    )
+
+                    homeServers.add(newServer)
+                    persistHomeServers()
+                    pendingHomeSshHostKeyTrust = null
+                    showHomeAddServerDialog = false
+                    clearHomeAddServerForm()
+                    if (newServer.installed) syncHomeServer(newServer)
+                }
+            }.onFailure {
+                homeAddError = it.message ?: tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED)
                 homeAddLoading = false
-                pendingHomeSshHostKeyTrust = null
-                showHomeAddServerDialog = true
-                return@launch
             }
-
-            val newServer = InstallServer(
-                id = UUID.randomUUID().toString(),
-                name = trust.ip,
-                ip = trust.ip,
-                username = trust.username,
-                password = trust.password,
-                installed = probed.installed,
-                sshHostKeyPin = trust.observedPin,
-                httpsPort = probed.relayInfo?.httpsPort,
-                relayTlsPin = probed.relayInfo?.pin,
-                adminToken = probed.relayInfo?.adminToken,
-                deploymentProfile = probed.deploymentProfile,
-                openRooms = probed.openRooms,
-                relayVersionState = if (probed.installed) RelayVersionState.UNKNOWN else RelayVersionState.NOT_INSTALLED
-            )
-
-            homeServers.add(newServer)
-            persistHomeServers()
-            pendingHomeSshHostKeyTrust = null
-            showHomeAddServerDialog = false
-            clearHomeAddServerForm()
-            if (newServer.installed) refreshHomeServer(newServer)
         }
     }
 
     fun installRelayFromHome(server: InstallServer) {
         if (homeInstallLoading) return
-        if (server.ip.isBlank() || server.username.isBlank() || server.password.isBlank()) {
-            homeInstallError = "Для установки нужны IP, логин и пароль"
+        val updating = serverNeedsRelayUpdate(server)
+        if (server.ip.isBlank() || server.username.isBlank() || !server.sshKeyInstalled) {
+            homeInstallError = if (updating) {
+                tr(TextId.A_CONFIGURED_SSH_KEY_IS_REQUIRED_FOR_UPDATING)
+            } else {
+                tr(TextId.A_CONFIGURED_SSH_KEY_IS_REQUIRED_FOR_INSTALLATION)
+            }
             return
         }
 
@@ -521,32 +754,72 @@ internal fun AppScreen(
         homeInstallLoading = true
         homeInstallLogs.clear()
         homeScope.launch {
+            if (!onAdminSessionAccess()) {
+                homeInstallError = tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED)
+                homeInstallLoading = false
+                return@launch
+            }
+
+            var sshPin = server.sshHostKeyPin
+            if (updating) {
+                val removalResult = runCatching {
+                    onRemoveRelay(
+                        server.ip.trim(),
+                        server.username.trim(),
+                        server.password,
+                        server.sshHostKeyPin,
+                        homeServersStore.hydrateDeploymentProfile(server)
+                    ) { line ->
+                        withContext(Dispatchers.Main) { homeInstallLogs.add(line) }
+                    }
+                }
+                val removal = removalResult.getOrElse {
+                    homeInstallError = it.message ?: tr(TextId.COULD_NOT_REMOVE_THE_OLD_SYMPOSIUMRELAY_VERSION)
+                    homeInstallLoading = false
+                    return@launch
+                }
+                if (!removal.success) {
+                    homeInstallError = tr(TextId.COULD_NOT_REMOVE_THE_OLD_SYMPOSIUMRELAY_VERSION)
+                    homeInstallLoading = false
+                    return@launch
+                }
+                sshPin = server.sshHostKeyPin ?: removal.observedSshHostKeyPin
+            }
+
             val result = runCatching {
                 onInstall(
                     server.ip.trim(),
                     server.username.trim(),
                     server.password,
-                    server.sshHostKeyPin,
-                    server.deploymentProfile
+                    sshPin,
+                    homeServersStore.hydrateDeploymentProfile(server),
+                    server.relayCapacity
                 ) { line ->
                     withContext(Dispatchers.Main) { homeInstallLogs.add(line) }
                 }
             }
 
             val installed = result.getOrElse {
-                homeInstallError = it.message ?: "Не удалось установить SymposiumRelay"
+                homeInstallError = it.message ?: if (updating) {
+                    tr(TextId.COULD_NOT_INSTALL_THE_NEW_SYMPOSIUMRELAY_VERSION)
+                } else {
+                    tr(TextId.COULD_NOT_INSTALL_SYMPOSIUMRELAY)
+                }
                 homeInstallLoading = false
                 return@launch
             }
 
             if (!installed.success) {
-                homeInstallError = "Установка завершилась с ошибкой (код ${installed.exitStatus})"
+                homeInstallError = tr(
+                    if (updating) TextId.UPDATE_FAILED_CODE else TextId.INSTALLATION_FAILED_CODE,
+                    installed.exitStatus
+                )
                 homeInstallLoading = false
                 return@launch
             }
 
             val finalRelayPin = installed.relayInfo?.pin ?: server.relayTlsPin
-            val finalAdminToken = installed.relayInfo?.adminToken ?: server.adminToken
+            val finalAdminToken = installed.relayInfo?.adminToken ?: homeServersStore.readAdminToken(server.id)
 
             updateHomeServer(server.id) { current ->
                 current.copy(
@@ -556,6 +829,7 @@ internal fun AppScreen(
                     httpsPort = installed.relayInfo?.httpsPort ?: current.httpsPort,
                     adminToken = finalAdminToken ?: current.adminToken,
                     deploymentProfile = installed.deploymentProfile ?: current.deploymentProfile,
+                    relayCapacity = installed.deploymentProfile?.relayCapacity ?: current.relayCapacity,
                     openRooms = installed.openRooms,
                     relayVersion = expectedRelayVersion,
                     relayVersionState = RelayVersionState.CURRENT
@@ -563,7 +837,7 @@ internal fun AppScreen(
             }
 
             if (finalRelayPin.isNullOrBlank() || finalAdminToken.isNullOrBlank()) {
-                homeInstallError = "Relay установлен, но приложение не получило TLS pin или adminToken. Переустановите SymposiumRelay."
+                homeInstallError = tr(TextId.RELAY_WAS_INSTALLED_BUT_THE_APP_DID_NOT_RECEIVE_A_TLS_PIN_OR_ADMIN_TOKEN)
                 homeInstallLoading = false
                 return@launch
             }
@@ -572,43 +846,108 @@ internal fun AppScreen(
             homeInstallError = null
             homeInstallLogs.clear()
             selectedHomeInstallServerId = null
-            selectedHomeCreateServerId = server.id
-            homeCreateRoomName = ""
-            homeRoomError = null
-            Toast.makeText(context, tr("SymposiumRelay установлен"), Toast.LENGTH_SHORT).show()
+            if (homeInstallReturnToCreateRoom) {
+                selectedHomeCreateServerId = server.id
+                homeCreateRoomName = ""
+                homeRoomError = null
+            }
+            homeInstallReturnToCreateRoom = false
+            Toast.makeText(
+                context,
+                tr(if (updating) TextId.SYMPOSIUMRELAY_UPDATED else TextId.SYMPOSIUMRELAY_INSTALLED),
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
     fun createHomeRoom(server: InstallServer) {
         if (homeRoomLoading) return
+        val activeServer = runCatching { homeServersStore.load() }
+            .getOrNull()
+            ?.firstOrNull { it.id == server.id }
+            ?: server
+        val activeServerIndex = homeServers.indexOfFirst { it.id == activeServer.id }
+        if (activeServerIndex >= 0) homeServers[activeServerIndex] = activeServer
         val roomName = homeCreateRoomName.trim()
         if (roomName.isBlank()) {
-            homeRoomError = "Введите название комнаты"
+            homeRoomError = tr(TextId.ENTER_A_ROOM_NAME)
             return
         }
-        if (server.openRooms.any { it.name.equals(roomName, ignoreCase = true) }) {
-            homeRoomError = "Комната с таким названием уже открыта"
+        if (activeServer.openRooms.any { it.name.equals(roomName, ignoreCase = true) }) {
+            homeRoomError = tr(TextId.A_ROOM_WITH_THIS_NAME_IS_ALREADY_OPEN)
             return
         }
-        if (!server.installed || server.relayTlsPin.isNullOrBlank() || server.adminToken.isNullOrBlank()) {
-            homeRoomError = "На этом сервере нельзя создать встречу: SymposiumRelay не установлен"
+        if (!activeServer.installed || activeServer.relayTlsPin.isNullOrBlank() || !activeServer.adminTokenAvailable) {
+            homeRoomError = tr(TextId.A_MEETING_CANNOT_BE_CREATED_ON_THIS_SERVER_BECAUSE_SYMPOSIUMRELAY_IS_NOT)
+            return
+        }
+        if (!serverAllowsRoomCreation(activeServer)) {
+            homeRoomError = if (serverNeedsRelayUpdate(activeServer)) {
+                tr(TextId.UPDATE_SELECTED_RELAY_FIRST)
+            } else {
+                tr(TextId.RELAY_VERSION_COULD_NOT_BE_VERIFIED)
+            }
             return
         }
 
         homeRoomError = null
         homeRoomLoading = true
         homeScope.launch {
+            var roomServer = activeServer
             val result = runCatching {
-                onSetRoomOpenState(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken, roomName, true)
+                withAdminOperation {
+                    try {
+                        onCreateRoom(
+                            roomServer.ip,
+                            roomServer.httpsPort,
+                            roomServer.relayTlsPin,
+                            homeServersStore.readAdminToken(roomServer.id),
+                            roomName,
+                            false,
+                            false
+                        )
+                    } catch (error: Exception) {
+                        if (!error.isSpkiPinMismatch() || !roomServer.sshKeyInstalled) throw error
+
+                        val probed = onProbeServer(
+                            roomServer.ip,
+                            roomServer.username,
+                            roomServer.password,
+                            roomServer.sshHostKeyPin
+                        )
+                        val relayInfo = probed.relayInfo ?: throw error
+                        roomServer = roomServer.copy(
+                            installed = probed.installed,
+                            sshHostKeyPin = roomServer.sshHostKeyPin ?: probed.observedSshHostKeyPin,
+                            relayTlsPin = relayInfo.pin,
+                            httpsPort = relayInfo.httpsPort,
+                            adminToken = relayInfo.adminToken,
+                            deploymentProfile = probed.deploymentProfile ?: roomServer.deploymentProfile,
+                            relayCapacity = probed.deploymentProfile?.relayCapacity ?: roomServer.relayCapacity,
+                            openRooms = probed.openRooms
+                        )
+                        updateHomeServer(roomServer.id) { roomServer }
+
+                        onCreateRoom(
+                            roomServer.ip,
+                            roomServer.httpsPort,
+                            roomServer.relayTlsPin,
+                            homeServersStore.readAdminToken(roomServer.id),
+                            roomName,
+                            false,
+                            false
+                        )
+                    }
+                }
             }
 
             val roomResult = result.getOrElse {
-                homeRoomError = it.message ?: "Не удалось создать встречу"
+                homeRoomError = it.message ?: tr(TextId.COULD_NOT_CREATE_THE_MEETING)
                 homeRoomLoading = false
                 return@launch
             }
 
-            updateHomeServer(server.id) { current ->
+            updateHomeServer(roomServer.id) { current ->
                 current.copy(
                     openRooms = roomResult.openRooms,
                     sshHostKeyPin = current.sshHostKeyPin ?: roomResult.observedSshHostKeyPin,
@@ -618,7 +957,14 @@ internal fun AppScreen(
                 )
             }
 
-            conferenceE2eeSecrets.rotate(server.ip, server.httpsPort, roomName)
+            roomResult.openRooms.firstOrNull { it.name == roomName }?.let { createdRoom ->
+                conferenceE2eeSecrets.rotate(
+                    roomServer.ip,
+                    roomServer.httpsPort,
+                    createdRoom.name,
+                    createdRoom.roomInstance
+                )
+            }
 
             homeRoomLoading = false
             showCreateMeetingDialog = false
@@ -628,16 +974,52 @@ internal fun AppScreen(
         }
     }
 
+    fun saveHomeRoomSettings(server: InstallServer, room: OpenRoomInfo) {
+        if (homeRoomLoading) return
+        homeRoomLoading = true
+        homeScope.launch {
+            val result = runCatching {
+                onSetRoomSettings(
+                    server.ip,
+                    server.httpsPort,
+                    server.relayTlsPin,
+                    homeServersStore.readAdminToken(server.id),
+                    room.name,
+                    homeEditMuteAllByDefault,
+                    homeEditAdmitWithoutApproval
+                )
+            }
+            val roomResult = result.getOrElse {
+                Toast.makeText(
+                    context,
+                    trExternal(it.message ?: tr(TextId.COULD_NOT_SAVE_THE_ROOM_SETTINGS)),
+                    Toast.LENGTH_SHORT
+                ).show()
+                homeRoomLoading = false
+                return@launch
+            }
+            updateHomeServer(server.id) { current ->
+                current.copy(openRooms = roomResult.openRooms)
+            }
+            homeRoomLoading = false
+            Toast.makeText(context, tr(TextId.ROOM_SETTINGS_SAVED), Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun closeHomeMeeting(server: InstallServer, room: OpenRoomInfo) {
         if (homeRoomLoading) return
         homeRoomLoading = true
         homeScope.launch {
             val result = runCatching {
-                onSetRoomOpenState(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken, room.name, false)
+                onSetRoomOpenState(server.ip, server.httpsPort, server.relayTlsPin, homeServersStore.readAdminToken(server.id), room.name, false)
             }
 
             val roomResult = result.getOrElse {
-                Toast.makeText(context, tr(it.message ?: "Не удалось закрыть комнату"), Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    trExternal(it.message ?: tr(TextId.COULD_NOT_CLOSE_THE_ROOM)),
+                    Toast.LENGTH_SHORT
+                ).show()
                 homeRoomLoading = false
                 return@launch
             }
@@ -652,7 +1034,7 @@ internal fun AppScreen(
                 )
             }
 
-            conferenceE2eeSecrets.remove(server.ip, server.httpsPort, room.name)
+            conferenceE2eeSecrets.remove(server.ip, server.httpsPort, room.name, room.roomInstance)
 
             homeRoomLoading = false
             selectedHomeMeetingServerId = null
@@ -670,13 +1052,17 @@ internal fun AppScreen(
                     server.ip,
                     server.httpsPort,
                     server.relayTlsPin,
-                    server.adminToken,
+                    homeServersStore.readAdminToken(server.id),
                     room.name
                 )
             }
 
             val roomResult = result.getOrElse {
-                Toast.makeText(context, tr(it.message ?: "Не удалось обновить ссылку модератора"), Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    trExternal(it.message ?: tr(TextId.COULD_NOT_REFRESH_THE_MODERATOR_LINK)),
+                    Toast.LENGTH_SHORT
+                ).show()
                 homeRoomLoading = false
                 confirmHomeModeratorLinkRotation = false
                 return@launch
@@ -693,44 +1079,96 @@ internal fun AppScreen(
 
             homeRoomLoading = false
             confirmHomeModeratorLinkRotation = false
-            Toast.makeText(context, tr("Ссылка модератора обновлена"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, tr(TextId.MODERATOR_LINK_REFRESHED), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun rotateHomeE2eeKey(server: InstallServer, room: OpenRoomInfo) {
+        runCatching {
+            conferenceE2eeSecrets.rotate(
+                server.ip,
+                server.httpsPort,
+                room.name,
+                room.roomInstance
+            )
+        }.onSuccess {
+            confirmHomeE2eeKeyRotation = false
+            Toast.makeText(context, tr(TextId.E2EE_KEY_REFRESHED), Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            confirmHomeE2eeKeyRotation = false
+            Toast.makeText(context, trExternal(it.message ?: tr(TextId.COULD_NOT_CREATE_THE_MEETING)), Toast.LENGTH_SHORT).show()
         }
     }
 
     fun homeGuestLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        if (pin.isNullOrBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectHttpRedirectLink(server.ip, server.httpsPort, room.name, pin, e2eeSecret)
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
+            server.ip,
+            server.httpsPort,
+            room.name,
+            room.roomInstance,
+            pin,
+            e2eeSecret,
+            requiredVersion = requiredVersion
+        )
     }
 
     fun homeGuestQrLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        if (pin.isNullOrBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectDeepLink(server.ip, server.httpsPort, room.name, pin, e2eeSecret)
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
+            server.ip,
+            server.httpsPort,
+            room.name,
+            room.roomInstance,
+            pin,
+            e2eeSecret,
+            requiredVersion = requiredVersion
+        )
     }
 
     fun homeModeratorLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        val modKey = room.moderatorKey.trim()
-        if (pin.isNullOrBlank() || modKey.isBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectDeepLink(
+        val modKey = homeServersStore.readModeratorKey(server.id, room).orEmpty().trim()
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || modKey.isBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
             server.ip,
             server.httpsPort,
             room.name,
+            room.roomInstance,
             pin,
             e2eeSecret,
+            requiredVersion = requiredVersion,
             moderatorKey = modKey
         )
     }
 
-    fun showMissingLinkDataError() {
-        Toast.makeText(context, tr("Нет TLS pin или moderator_key"), Toast.LENGTH_SHORT).show()
+    fun showMissingLinkDataError(
+        server: InstallServer,
+        room: OpenRoomInfo,
+        requireModeratorKey: Boolean = false
+    ) {
+        val message = when {
+            !isValidRoomInstance(room.roomInstance) -> tr(TextId.REFRESH_ROOM_LIST)
+            verifiedRoomRequiredVersion(room) == null ->
+                tr(TextId.THE_SERVER_DID_NOT_CONFIRM_THE_ROOM_VERSION_REINSTALL_SYMPOSIUMRELAY)
+            server.relayTlsPin.isNullOrBlank() -> tr(TextId.TLS_PIN_IS_MISSING)
+            requireModeratorKey && !room.moderatorKeyAvailable -> tr(TextId.MODERATOR_KEY_IS_MISSING)
+            else -> tr(TextId.UNABLE_TO_CREATE_THE_ROOM_LINK)
+        }
+        Toast.makeText(context, trExternal(message), Toast.LENGTH_LONG).show()
     }
 
     fun cancelPendingRoomConnection() {
+        pendingInvitationTrust = null
+        acceptedInvitationTlsPin = null
         connectingToRoom = false
         connectingRoomName = ""
         inCallUi = false
@@ -747,18 +1185,40 @@ internal fun AppScreen(
     }
 
     LaunchedEffect(appVersion) {
-        availableUpdateVersion = AppUpdateChecker.findAvailableVersion(appVersion)
+        availableUpdateVersion = checkForAppUpdate(appVersion)
     }
 
-    if (!telemetryPromptShown) {
-        TelemetryConsentDialog(
-            onEnable = { onTelemetryConsentResult(true) },
-            onSkip = { onTelemetryConsentResult(false) }
+    if (secretProtectionChoicePromptVisible) {
+        InitialSecretProtectionDialog(
+            onEnable = { onInitialSecretProtectionChoice(true) },
+            onDecline = { onInitialSecretProtectionChoice(false) }
+        )
+    } else if (welcomeNewsPromptVisible) {
+        WelcomeNewsDialog(
+            onDismiss = onWelcomeNewsPromptDismiss,
+            onOpenSite = {
+                onWelcomeNewsPromptDismiss()
+                openExternalIntent(
+                    context,
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://symposium-dp.app"))
+                )
+            },
+            onOpenTelegram = {
+                onWelcomeNewsPromptDismiss()
+                openExternalIntent(
+                    context,
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/symposium_app"))
+                )
+            }
         )
     }
 
     availableUpdateVersion
-        ?.takeIf { telemetryPromptShown && !updateNotificationDismissed }
+        ?.takeIf {
+            !secretProtectionChoicePromptVisible &&
+                !welcomeNewsPromptVisible &&
+                !updateNotificationDismissed
+        }
         ?.let { remoteVersion ->
             UpdateAvailableDialog(
                 currentVersion = appVersion,
@@ -784,6 +1244,11 @@ internal fun AppScreen(
     BackHandler {
         when {
             moderatorPanelOpen -> moderatorPanelOpen = false
+            inCallUi && callViewMode == CallViewMode.FULLSCREEN -> callViewMode = CallViewMode.FOCUS
+            inCallUi && connected -> {
+                inCallUi = false
+                minimizedCallPreviewVisible = true
+            }
             connectingToRoom -> cancelPendingRoomConnection()
             showConnectDialog -> {
                 showConnectDialog = false
@@ -797,19 +1262,32 @@ internal fun AppScreen(
                     (context as? Activity)?.finish()
                 } else {
                     lastBackPressAt = now
-                    Toast.makeText(context, tr("Нажмите ещё раз, чтобы выйти"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, tr(TextId.TAP_AGAIN_TO_EXIT), Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
+    val latestReconnectMode by rememberUpdatedState(reconnectMode)
+    val latestPendingInvitationTrust by rememberUpdatedState(pendingInvitationTrust)
     val uiStateBinder = remember {
         object : UiBinder {
             override fun setStatus(s: String) { mainHandler.post { status = s } }
             override fun setConnected(on: Boolean) {
                 mainHandler.post {
+                    val shouldOpenCall = on && !connected && (
+                        connectingToRoom ||
+                            lobbyWaiting ||
+                            latestReconnectMode ||
+                            connectingRoomName.isNotBlank()
+                        )
                     connected = on
                     if (on) {
+                        if (shouldOpenCall) {
+                            lobbyWaiting = false
+                            inCallUi = true
+                            minimizedCallPreviewVisible = true
+                        }
                         connectingToRoom = false
                         connectingRoomName = ""
                         clearConnectForm()
@@ -880,6 +1358,38 @@ internal fun AppScreen(
                         clearConnectForm()
                         inCallUi = false
                         connected = false
+                    }
+                }
+            }
+            override fun onRelayConnectionAuthenticated() {
+                val authenticated = latestPendingInvitationTrust ?: return
+                mainHandler.post {
+                    runCatching {
+                        conferenceE2eeSecrets.save(
+                            authenticated.endpoint.host,
+                            authenticated.endpoint.port,
+                            authenticated.room,
+                            authenticated.roomInstance,
+                            authenticated.e2eeSecret
+                        )
+                        relayTlsPinTrustStore.save(authenticated.endpoint, authenticated.tlsPin)
+                    }.onSuccess {
+                        if (pendingInvitationTrust == authenticated) {
+                            pendingInvitationTrust = null
+                        }
+                        if (
+                            acceptedInvitationTlsPin?.endpoint == authenticated.endpoint &&
+                            acceptedInvitationTlsPin?.pin == authenticated.tlsPin
+                        ) {
+                            acceptedInvitationTlsPin = null
+                        }
+                        relayTlsPinTrustRevision += 1
+                    }.onFailure { error ->
+                        Toast.makeText(
+                            context,
+                            tr(TextId.SAVE_TRUST_DATA_FAILED, error.message.orEmpty()),
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
             }
@@ -959,10 +1469,24 @@ internal fun AppScreen(
         }
     }
 
+    LaunchedEffect(pictureInPictureMode) {
+        if (pictureInPictureMode) {
+            moderatorPanelOpen = false
+            wasInPictureInPictureMode = true
+        } else if (wasInPictureInPictureMode) {
+            wasInPictureInPictureMode = false
+            if (connected) {
+                currentScreen = RootScreen.HOME
+                inCallUi = true
+            }
+        }
+    }
+
     LaunchedEffect(connected, reconnectMode, connectingToRoom, showConnectDialog) {
         if (connected || (reconnectMode && !connectingToRoom && !showConnectDialog)) {
             lobbyWaiting = false
             inCallUi = true
+            minimizedCallPreviewVisible = true
         }
         if (!connected && !reconnectMode && !lobbyWaiting && !connectingToRoom) {
             inCallUi = false
@@ -972,6 +1496,7 @@ internal fun AppScreen(
             pipOffsetX = 0f
             pipOffsetY = 0f
             pipExpanded = false
+            minimizedCallPreviewVisible = true
             localRole = ROLE_GUEST
             selfMutedByModerator = false
             selfHandRaised = false
@@ -992,38 +1517,33 @@ internal fun AppScreen(
 
     LaunchedEffect(uiStateBinder) { onRequestBind(uiStateBinder) }
 
-    LaunchedEffect(Unit) {
-        refreshHomeServers()
-    }
-
     LaunchedEffect(currentScreen) {
         if (currentScreen == RootScreen.HOME) {
-            refreshHomeServers()
+            loadHomeServersFromStore()
+            checkHomeRelayVersions()
         }
     }
 
-    LaunchedEffect(homeServersLoaded) {
-        if (!homeServersLoaded) return@LaunchedEffect
-        while (true) {
-            delay(20_000)
-            val needsDiscovery = homeServers.any {
-                !it.installed ||
-                    it.relayTlsPin.isNullOrBlank() ||
-                    it.adminToken.isNullOrBlank() ||
-                    it.relayVersionState == RelayVersionState.UNKNOWN
-            }
-            if (currentScreen == RootScreen.HOME && needsDiscovery && !homeServersRefreshing) {
-                refreshHomeServers()
-            }
-        }
+    LaunchedEffect(showCreateMeetingDialog) {
+        if (showCreateMeetingDialog) checkHomeRelayVersions()
     }
 
-    LaunchedEffect(initialConnectLink) {
-        if (!initialConnectLink.isNullOrBlank()) {
-            connectLink = initialConnectLink
-            usernameInput = parseConnectLink(initialConnectLink)?.username.orEmpty()
-            currentScreen = RootScreen.HOME
-            showConnectDialog = true
+    LaunchedEffect(selectedHomeMeetingServerId, selectedHomeMeetingRoomName) {
+        val server = selectedHomeMeetingServer ?: return@LaunchedEffect
+        if (selectedHomeMeetingRoomName != null) checkHomeRelayVersion(server)
+    }
+
+    val lifecycleOwner = LocalView.current.findViewTreeLifecycleOwner()
+    DisposableEffect(lifecycleOwner, currentScreen) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && currentScreen == RootScreen.HOME) {
+                loadHomeServersFromStore()
+                checkHomeRelayVersions()
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose {
+            lifecycleOwner?.lifecycle?.removeObserver(observer)
         }
     }
 
@@ -1037,7 +1557,7 @@ internal fun AppScreen(
         if (showCreateMeetingDialog) {
             HomeCreateMeetingDialog(
                 servers = homeServers,
-                loading = homeServersRefreshing,
+                loading = homeServersRefreshing || homeVersionsChecking,
                 onDismiss = { showCreateMeetingDialog = false },
                 onAddServer = {
                     homeAddError = null
@@ -1048,13 +1568,29 @@ internal fun AppScreen(
                 onServerClick = { server ->
                     homeCreateRoomName = ""
                     homeRoomError = null
-                    if (canCreateMeetingOnServer(server)) {
-                        selectedHomeCreateServerId = server.id
-                    } else {
-                        homeInstallError = null
-                        homeInstallLogs.clear()
-                        selectedHomeInstallServerId = server.id
+                    when {
+                        canCreateMeetingOnServer(server) -> {
+                            selectedHomeCreateServerId = server.id
+                        }
+                        server.installed &&
+                            server.relayVersionState == RelayVersionState.UNKNOWN &&
+                            !server.relayTlsPin.isNullOrBlank() &&
+                            server.adminTokenAvailable -> {
+                            checkHomeRelayVersion(server)
+                        }
+                        else -> {
+                            homeInstallError = null
+                            homeInstallLogs.clear()
+                            homeInstallReturnToCreateRoom = true
+                            selectedHomeInstallServerId = server.id
+                        }
                     }
+                },
+                onUpdateServer = { server ->
+                    homeInstallError = null
+                    homeInstallLogs.clear()
+                    homeInstallReturnToCreateRoom = true
+                    selectedHomeInstallServerId = server.id
                 }
             )
         }
@@ -1104,10 +1640,16 @@ internal fun AppScreen(
                 loading = homeInstallLoading,
                 onDismiss = {
                     if (!homeInstallLoading) {
+                        val returnToCreate = homeInstallReturnToCreateRoom
                         selectedHomeInstallServerId = null
                         homeInstallError = null
                         homeInstallLogs.clear()
+                        homeInstallReturnToCreateRoom = false
+                        if (returnToCreate) showCreateMeetingDialog = true
                     }
+                },
+                onCapacityChange = { capacity ->
+                    updateHomeServer(server.id) { current -> current.copy(relayCapacity = capacity) }
                 },
                 onInstall = { installRelayFromHome(server) }
             )
@@ -1138,39 +1680,54 @@ internal fun AppScreen(
                 server = server,
                 room = room,
                 loading = homeRoomLoading,
+                muteAllByDefault = homeEditMuteAllByDefault,
+                admitWithoutApproval = homeEditAdmitWithoutApproval,
+                onMuteAllByDefaultChange = { homeEditMuteAllByDefault = it },
+                onAdmitWithoutApprovalChange = { homeEditAdmitWithoutApproval = it },
+                onSaveSettings = { saveHomeRoomSettings(server, room) },
                 onCopyGuest = {
                     val link = homeGuestLink(server, room)
-                    if (link == null) showMissingLinkDataError() else copyHomeValue("guest_room_link", link)
+                    if (link == null) {
+                        showMissingLinkDataError(server, room)
+                    } else {
+                        copyHomeValue("guest_room_link", link)
+                    }
                 },
                 onQrGuest = {
                     val link = homeGuestQrLink(server, room)
                     if (link == null) {
-                        showMissingLinkDataError()
+                        showMissingLinkDataError(server, room)
                     } else {
-                        homeQrDialogTitle = "QR гостя"
+                        homeQrDialogTitle = tr(TextId.GUEST_QR_CODE)
                         homeQrDialogLink = link
                     }
                 },
                 onCopyModerator = {
                     val link = homeModeratorLink(server, room)
-                    if (link == null) showMissingLinkDataError() else copyHomeValue("moderator_room_link", link)
+                    if (link == null) {
+                        showMissingLinkDataError(server, room, requireModeratorKey = true)
+                    } else {
+                        copyHomeValue("moderator_room_link", link)
+                    }
                 },
                 onQrModerator = {
                     val link = homeModeratorLink(server, room)
                     if (link == null) {
-                        showMissingLinkDataError()
+                        showMissingLinkDataError(server, room, requireModeratorKey = true)
                     } else {
-                        homeQrDialogTitle = "QR модератора"
+                        homeQrDialogTitle = tr(TextId.MODERATOR_QR_CODE)
                         homeQrDialogLink = link
                     }
                 },
                 onRotateModeratorLink = { confirmHomeModeratorLinkRotation = true },
+                onRotateE2eeKey = { confirmHomeE2eeKeyRotation = true },
                 onCloseMeeting = { confirmHomeCloseMeeting = true },
                 onDismiss = {
                     selectedHomeMeetingServerId = null
                     selectedHomeMeetingRoomName = null
                     confirmHomeCloseMeeting = false
                     confirmHomeModeratorLinkRotation = false
+                    confirmHomeE2eeKeyRotation = false
                 }
             )
         }
@@ -1179,12 +1736,16 @@ internal fun AppScreen(
             val server = selectedHomeMeetingServer
             val room = selectedHomeMeetingRoom
             AppDialog(
-                title = "Закрыть комнату?",
+                title = tr(TextId.CLOSE_THE_ROOM),
                 onDismiss = { confirmHomeCloseMeeting = false },
                 dismissEnabled = !homeRoomLoading,
                 content = {
                     Text(
-                        text = "Комната \"${room.name}\" будет закрыта на сервере ${serverDisplayAddress(server)}.",
+                        text = tr(
+                            TextId.CLOSE_ROOM_CONFIRMATION,
+                            room.name,
+                            serverDisplayAddress(server)
+                        ),
                         color = appTextPrimaryColor(),
                         fontSize = 14.sp,
                         lineHeight = 19.sp
@@ -1192,7 +1753,7 @@ internal fun AppScreen(
                 },
                 actions = {
                     ActionButton(
-                        label = "Закрыть комнату",
+                        label = tr(TextId.CLOSE_ROOM),
                         onClick = {
                             confirmHomeCloseMeeting = false
                             closeHomeMeeting(server, room)
@@ -1210,12 +1771,12 @@ internal fun AppScreen(
             val server = selectedHomeMeetingServer
             val room = selectedHomeMeetingRoom
             AppDialog(
-                title = "Обновить ссылку модератора?",
+                title = tr(TextId.REFRESH_MODERATOR_LINK_2),
                 onDismiss = { confirmHomeModeratorLinkRotation = false },
                 dismissEnabled = !homeRoomLoading,
                 content = {
                     Text(
-                        text = "Старая ссылка перестанет работать. Активные модераторы комнаты \"${room.name}\" будут отключены; гости останутся в комнате.",
+                        text = tr(TextId.ROTATE_MODERATOR_LINK_CONFIRMATION, room.name),
                         color = appTextPrimaryColor(),
                         fontSize = 14.sp,
                         lineHeight = 19.sp
@@ -1223,7 +1784,7 @@ internal fun AppScreen(
                 },
                 actions = {
                     ActionButton(
-                        label = "Обновить ссылку",
+                        label = tr(TextId.REFRESH_LINK),
                         onClick = { rotateHomeModeratorLink(server, room) },
                         kind = ActionButtonKind.DANGER,
                         enabled = !homeRoomLoading,
@@ -1234,19 +1795,66 @@ internal fun AppScreen(
             )
         }
 
+        if (confirmHomeE2eeKeyRotation && selectedHomeMeetingServer != null && selectedHomeMeetingRoom != null) {
+            val server = selectedHomeMeetingServer
+            val room = selectedHomeMeetingRoom
+            AppDialog(
+                title = tr(TextId.REFRESH_E2EE_KEY),
+                onDismiss = { confirmHomeE2eeKeyRotation = false },
+                dismissEnabled = !homeRoomLoading,
+                content = {
+                    Text(
+                        text = tr(TextId.ROTATE_E2EE_KEY_CONFIRMATION, room.name),
+                        color = appTextPrimaryColor(),
+                        fontSize = 14.sp,
+                        lineHeight = 19.sp
+                    )
+                },
+                actions = {
+                    ActionButton(
+                        label = tr(TextId.REFRESH_E2EE_KEY),
+                        onClick = { rotateHomeE2eeKey(server, room) },
+                        kind = ActionButtonKind.DANGER,
+                        enabled = !homeRoomLoading,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            )
+        }
+
         homeQrDialogLink?.let { link ->
             QrCodeDialog(
-                link = link,
+                token = link,
                 title = homeQrDialogTitle,
                 onDismiss = { homeQrDialogLink = null },
                 onCopy = { copyHomeValue("room_qr_link", link) }
             )
         }
 
+        val effectivePeerMuteStates = peerMuteStates.toMutableMap().apply {
+            val id = peerId.trim()
+            if (id.isNotBlank() && id != "—") {
+                this[id] = selfMutedByModerator || this[id] == true
+            }
+        }.toMap()
+
+        val effectivePeerMicOffStates = peersState.associate { peer ->
+            val serverMuted = effectivePeerMuteStates[peer.peerId] == true
+            val userMicOff = peerAudioEnabledStates[peer.peerId] == false
+            peer.peerId to (serverMuted || userMicOff || !peer.audioAttached)
+        }
+
+        val effectivePeerVideoOffStates = peersState.associate { peer ->
+            val userVideoOff = peerVideoEnabledStates[peer.peerId] == false
+            peer.peerId to (userVideoOff || !peer.videoAttached)
+        }
+
         Scaffold(
             containerColor = appBackgroundColor(),
             bottomBar = {
-                if (currentScreen == RootScreen.HOME && connected) {
+                if (pictureInPictureMode) {
+                    Unit
+                } else if (currentScreen == RootScreen.HOME && connected && inCallUi) {
                     ControlBar(
                         speakerOn = speakerOn,
                         micEnabled = micEnabled,
@@ -1369,31 +1977,7 @@ internal fun AppScreen(
                 return@Scaffold
             }
 
-            if (inCallUi && currentScreen == RootScreen.HOME) {
-                val effectivePeerMuteStates = peerMuteStates.toMutableMap().apply {
-                    val id = peerId.trim()
-                    if (id.isNotBlank() && id != "—") {
-                        this[id] = selfMutedByModerator || this[id] == true
-                    }
-                }.toMap()
-
-                val effectivePeerMicOffStates = peersState.associate { peer ->
-                    val serverMuted = effectivePeerMuteStates[peer.peerId] == true
-                    val userAudioEnabled = peerAudioEnabledStates[peer.peerId]
-                    val userMicOff = userAudioEnabled == false
-                    val noAudioTrack = !peer.audioAttached
-
-                    peer.peerId to (serverMuted || userMicOff || noAudioTrack)
-                }
-
-                val effectivePeerVideoOffStates = peersState.associate { peer ->
-                    val userVideoEnabled = peerVideoEnabledStates[peer.peerId]
-                    val userVideoOff = userVideoEnabled == false
-                    val noVideoTrack = !peer.videoAttached
-
-                    peer.peerId to (userVideoOff || noVideoTrack)
-                }
-
+            if (pictureInPictureMode || (inCallUi && currentScreen == RootScreen.HOME)) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1409,9 +1993,7 @@ internal fun AppScreen(
                         peerMicOffStates = effectivePeerMicOffStates,
                         peerVideoOffStates = effectivePeerVideoOffStates,
                         onPin = { pinnedPeerId = it },
-                        onToggleMode = {
-                            callViewMode = if (callViewMode == CallViewMode.FOCUS) CallViewMode.GRID else CallViewMode.FOCUS
-                        },
+                        onModeChange = { callViewMode = it },
                         onSwitchCamera = onSwitchCamera,
                         pipOffsetX = pipOffsetX,
                         pipOffsetY = pipOffsetY,
@@ -1420,11 +2002,12 @@ internal fun AppScreen(
                             pipOffsetY += dy
                         },
                         pipExpanded = pipExpanded,
-                        onTogglePipExpanded = { pipExpanded = !pipExpanded }
+                        onTogglePipExpanded = { pipExpanded = !pipExpanded },
+                        pictureInPictureMode = pictureInPictureMode
                     )
 
                     ModeratorPanelOverlay(
-                        visible = moderatorPanelOpen,
+                        visible = moderatorPanelOpen && !pictureInPictureMode,
                         pendingPeers = pendingLobbyState,
                         peers = peersState,
                         selfPeerId = peerId,
@@ -1467,7 +2050,7 @@ internal fun AppScreen(
                     )
 
                     ReconnectOverlay(
-                        visible = reconnectMode,
+                        visible = reconnectMode && !pictureInPictureMode,
                         onCancel = {
                             inCallUi = false
                             pinnedPeerId = null
@@ -1483,13 +2066,17 @@ internal fun AppScreen(
                 return@Scaffold
             }
 
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(inner)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                when (currentScreen) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    when (currentScreen) {
                     RootScreen.HOME -> {
                         if (showConnectDialog) {
                             HomeConnectScreen(
@@ -1498,17 +2085,40 @@ internal fun AppScreen(
                                 username = usernameInput,
                                 onUsernameChange = { usernameInput = it },
                                 parsed = parsedConnectLink,
+                                linkError = connectLinkError,
+                                tlsTrust = invitationTlsTrust,
                                 reconnectMode = reconnectMode,
+                                onAcceptChangedTlsPin = {
+                                    invitationTlsTrust
+                                        ?.takeIf { it.state == InvitationTlsTrustState.CHANGED }
+                                        ?.let { trust ->
+                                            acceptedInvitationTlsPin = AcceptedInvitationTlsPin(
+                                                endpoint = trust.endpoint,
+                                                pin = trust.presentedPin
+                                            )
+                                        }
+                                },
                                 onConnect = {
                                     parsedConnectLink?.let { payload ->
+                                        val trust = invitationTlsTrust ?: return@let
+                                        if (!trust.mayConnect) {
+                                            Toast.makeText(
+                                                context,
+                                                tr(TextId.CONFIRM_NEW_TLS_PIN_FIRST),
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            return@let
+                                        }
                                         val finalUsername = usernameInput.trim().ifBlank { payload.username.trim() }
-                                        conferenceE2eeSecrets.save(
-                                            payload.ip,
-                                            null,
-                                            payload.room,
-                                            payload.e2eeSecret
+                                        pendingInvitationTrust = PendingInvitationTrust(
+                                            endpoint = trust.endpoint,
+                                            tlsPin = trust.presentedPin,
+                                            room = payload.room,
+                                            roomInstance = payload.roomInstance,
+                                            e2eeSecret = payload.e2eeSecret
                                         )
                                         showConnectDialog = false
+                                        connectLink = ""
                                         connectingToRoom = true
                                         connectingRoomName = payload.room
                                         status = "connecting…"
@@ -1516,6 +2126,7 @@ internal fun AppScreen(
                                         onConnect(
                                             payload.ip,
                                             payload.room,
+                                            payload.roomInstance,
                                             finalUsername,
                                             payload.tlsPin,
                                             payload.moderatorKey,
@@ -1534,7 +2145,7 @@ internal fun AppScreen(
                                     HomeMainScreen(
                                         servers = homeServers,
                                         reconnectMode = reconnectMode,
-                                        roomsRefreshing = homeServersRefreshing,
+                                        roomsRefreshing = homeServersRefreshing || homeVersionsChecking,
                                         onOpenConnect = {
                                             showCreateMeetingDialog = false
                                             showConnectDialog = true
@@ -1542,12 +2153,21 @@ internal fun AppScreen(
                                         onOpenCreateMeeting = {
                                             showConnectDialog = false
                                             showCreateMeetingDialog = true
+                                        },
+                                        onRefreshRooms = {
                                             refreshHomeServers()
                                         },
-                                        onRefreshRooms = { refreshHomeServers() },
                                         onMeetingClick = { server, room ->
                                             selectedHomeMeetingServerId = server.id
                                             selectedHomeMeetingRoomName = room.name
+                                            homeEditMuteAllByDefault = room.muteAllByDefault
+                                            homeEditAdmitWithoutApproval = room.admitWithoutApproval
+                                        },
+                                        onUpdateServer = { server ->
+                                            homeInstallError = null
+                                            homeInstallLogs.clear()
+                                            homeInstallReturnToCreateRoom = false
+                                            selectedHomeInstallServerId = server.id
                                         },
                                         modifier = Modifier.fillParentMaxHeight()
                                     )
@@ -1559,7 +2179,6 @@ internal fun AppScreen(
                     RootScreen.MENU -> {
                         MenuScreen(
                             onServers = {
-                                serversRefreshNonce++
                                 currentScreen = RootScreen.SERVERS
                             },
                             onSettings = { currentScreen = RootScreen.SETTINGS },
@@ -1570,12 +2189,16 @@ internal fun AppScreen(
                     RootScreen.SERVERS -> {
                         InstallTab(
                             expectedRelayVersion = expectedRelayVersion,
-                            refreshNonce = serversRefreshNonce,
+                            onAdminSessionAccess = onAdminSessionAccess,
                             onInstall = onInstall,
                             onRemoveRelay = onRemoveRelay,
                             onObserveSshHostKeyPin = onObserveSshHostKeyPin,
+                            onEnrollSshKey = onEnrollSshKey,
+                            onDeleteSshKey = onDeleteSshKey,
                             onProbeServer = onProbeServer,
                             onSetRoomOpenState = onSetRoomOpenState,
+                            onCreateRoom = onCreateRoom,
+                            onSetRoomSettings = onSetRoomSettings,
                             onRotateModeratorKey = onRotateModeratorKey,
                             onFetchOpenRooms = onFetchOpenRooms,
                             onFetchRelayVersion = onFetchRelayVersion
@@ -1590,6 +2213,8 @@ internal fun AppScreen(
                             onAppLanguageChange = onAppLanguageChange,
                             telemetryEnabled = telemetryEnabled,
                             onTelemetryEnabledChange = onTelemetryEnabledChange,
+                            secretProtectionEnabled = secretProtectionEnabled,
+                            onSecretProtectionEnabledChange = onSecretProtectionEnabledChange,
                             accessibilityFontScale = accessibilityFontScale,
                             onAccessibilityFontScaleChange = { scale ->
                                 accessibilityFontScale = scale
@@ -1600,19 +2225,41 @@ internal fun AppScreen(
                     RootScreen.ABOUT -> AboutScreen(appVersion = appVersion)
                 }
 
-                ReconnectOverlay(
-                    visible = reconnectMode,
-                    onCancel = {
-                        inCallUi = false
-                        pinnedPeerId = null
-                        moderatorPanelOpen = false
-                        callViewMode = CallViewMode.FOCUS
-                        pipOffsetX = 0f
-                        pipOffsetY = 0f
-                        pipExpanded = false
-                        onCancelReconnect()
-                    }
-                )
+                    ReconnectOverlay(
+                        visible = reconnectMode,
+                        onCancel = {
+                            inCallUi = false
+                            pinnedPeerId = null
+                            moderatorPanelOpen = false
+                            callViewMode = CallViewMode.FOCUS
+                            pipOffsetX = 0f
+                            pipOffsetY = 0f
+                            pipExpanded = false
+                            onCancelReconnect()
+                        }
+                    )
+                }
+
+                if (connected && !inCallUi && !pictureInPictureMode) {
+                    MinimizedCallPreview(
+                        peers = peersState,
+                        selfPeerId = peerId,
+                        pinnedPeerId = pinnedPeerId,
+                        peerHandStates = peerHandStates.toMap(),
+                        peerMicOffStates = effectivePeerMicOffStates,
+                        peerVideoOffStates = effectivePeerVideoOffStates,
+                        visible = minimizedCallPreviewVisible,
+                        onExpand = {
+                            inCallUi = true
+                            minimizedCallPreviewVisible = true
+                            currentScreen = RootScreen.HOME
+                        },
+                        onDismiss = { minimizedCallPreviewVisible = false },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(12.dp)
+                    )
+                }
             }
         }
     }
@@ -1638,12 +2285,13 @@ internal fun MinimalBottomNav(
             modifier = Modifier
                 .fillMaxWidth()
                 .border(1.dp, appGrayControlBorderColor(0.55f), navShape)
+                .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            NavIconButton(active = !menuActive, icon = Icons.Outlined.Home, label = "Главная", onClick = onHome, modifier = Modifier.weight(1f))
-            NavIconButton(active = menuActive, icon = Icons.Outlined.Settings, label = "Настройки", onClick = onMenu, modifier = Modifier.weight(1f))
+            NavIconButton(active = !menuActive, icon = Icons.Outlined.Home, label = tr(TextId.HOME), onClick = onHome, modifier = Modifier.weight(1f))
+            NavIconButton(active = menuActive, icon = Icons.Outlined.Settings, label = tr(TextId.SETTINGS), onClick = onMenu, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -1656,8 +2304,8 @@ internal fun NavIconButton(active: Boolean, icon: ImageVector, label: String, on
             .clip(AppButtonShape)
             .semantics {
                 role = Role.Button
-                contentDescription = tr(label)
-                stateDescription = tr(if (active) "Выбрано" else "Не выбрано")
+                contentDescription = label
+                stateDescription = tr(if (active) TextId.SELECTED else TextId.NOT_SELECTED)
             }
             .clickable(role = Role.Button, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1683,38 +2331,67 @@ internal fun NavIconButton(active: Boolean, icon: ImageVector, label: String, on
 }
 
 @Composable
-internal fun TelemetryConsentDialog(
-    onEnable: () -> Unit,
-    onSkip: () -> Unit
+internal fun WelcomeNewsDialog(
+    onDismiss: () -> Unit,
+    onOpenSite: () -> Unit,
+    onOpenTelegram: () -> Unit
 ) {
     AppDialog(
-        title = "Помочь улучшить приложение?",
-        onDismiss = onSkip,
+        title = tr(TextId.STAY_UP_TO_DATE),
+        onDismiss = onDismiss,
         content = {
             Text(
-                text = "Дайте Symposium возможность отправлять анонимную диагностику: длительность подключения, ошибки конференции, высокий ping и итог установки сервера.",
+                text = tr(TextId.FOLLOW_SYMPOSIUM_NEWS),
                 color = appTextSecondaryColor(),
                 fontSize = 14.sp,
                 lineHeight = 19.sp
             )
-            Text(
-                text = "Персональные данные отправляться не будут",
-                color = appTextSecondaryColor(),
-                fontSize = 13.sp,
-                lineHeight = 18.sp
+        },
+        actions = {
+            ActionButton(
+                label = tr(TextId.OPEN_WEBSITE),
+                onClick = onOpenSite,
+                kind = ActionButtonKind.PRIMARY,
+                modifier = Modifier.weight(1f)
             )
+            ActionButton(
+                label = tr(TextId.TELEGRAM),
+                onClick = onOpenTelegram,
+                kind = ActionButtonKind.SECONDARY,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    )
+}
+
+@Composable
+internal fun InitialSecretProtectionDialog(
+    onEnable: () -> Unit,
+    onDecline: () -> Unit
+) {
+    AppDialog(
+        title = tr(TextId.DATA_PROTECTION),
+        onDismiss = {},
+        dismissEnabled = false,
+        content = {
             Text(
-                text = "Независимо от выбора отправляются только факт установки, запуски приложения, ежедневный сигнал установленности и изменения этого разрешения.",
+                text = tr(TextId.SYMPOSIUM_CAN_PROTECT_APP_DATA_WITH_THE_DEVICE_PASSWORD_OR_BIOMETRICS),
                 color = appTextSecondaryColor(),
-                fontSize = 12.sp,
-                lineHeight = 17.sp
+                fontSize = 14.sp,
+                lineHeight = 19.sp
             )
         },
         actions = {
             ActionButton(
-                label = "Включить",
+                label = tr(TextId.ENABLE),
                 onClick = onEnable,
                 kind = ActionButtonKind.PRIMARY,
+                modifier = Modifier.weight(1f)
+            )
+            ActionButton(
+                label = tr(TextId.NOT_NOW),
+                onClick = onDecline,
+                kind = ActionButtonKind.SECONDARY,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -1730,29 +2407,29 @@ internal fun UpdateAvailableDialog(
     onOpenTelegram: () -> Unit
 ) {
     AppDialog(
-        title = "Доступно обновление",
+        title = tr(TextId.UPDATE_AVAILABLE),
         onDismiss = onDismiss,
         content = {
             Text(
-                text = "Доступна новая версия Symposium.",
+                text = tr(TextId.A_NEW_VERSION_OF_SYMPOSIUM_IS_AVAILABLE),
                 color = appTextPrimaryColor(),
                 fontSize = 15.sp,
                 lineHeight = 21.sp
             )
             Text(
-                text = "Установленная версия: $currentVersion",
+                text = tr(TextId.INSTALLED_VERSION_LABEL, currentVersion),
                 color = appTextSecondaryColor(),
                 fontSize = 13.sp,
                 lineHeight = 18.sp
             )
             Text(
-                text = "Доступная версия: $availableVersion",
+                text = tr(TextId.AVAILABLE_VERSION_LABEL, availableVersion),
                 color = appTextSecondaryColor(),
                 fontSize = 13.sp,
                 lineHeight = 18.sp
             )
             Text(
-                text = "Обновить приложение можно на сайте Symposium. Новости о выпусках доступны в Telegram-канале.",
+                text = tr(TextId.YOU_CAN_UPDATE_THE_APP_ON_THE_SYMPOSIUM_WEBSITE_RELEASE_NEWS_IS_AVAILABL),
                 color = appTextSecondaryColor(),
                 fontSize = 13.sp,
                 lineHeight = 18.sp
@@ -1760,13 +2437,13 @@ internal fun UpdateAvailableDialog(
         },
         actions = {
             ActionButton(
-                label = "Открыть сайт",
+                label = tr(TextId.OPEN_WEBSITE),
                 onClick = onOpenSite,
                 kind = ActionButtonKind.PRIMARY,
                 modifier = Modifier.weight(1f)
             )
             ActionButton(
-                label = "Telegram",
+                label = tr(TextId.TELEGRAM),
                 onClick = onOpenTelegram,
                 kind = ActionButtonKind.SECONDARY,
                 modifier = Modifier.weight(1f)
@@ -1783,6 +2460,8 @@ internal fun SettingsScreen(
     onAppLanguageChange: (AppLanguage) -> Unit,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
+    secretProtectionEnabled: Boolean,
+    onSecretProtectionEnabledChange: (Boolean) -> Unit,
     accessibilityFontScale: AccessibilityFontScale,
     onAccessibilityFontScaleChange: (AccessibilityFontScale) -> Unit
 ) {
@@ -1797,9 +2476,9 @@ internal fun SettingsScreen(
     ) {
         item {
             SettingsDropdownCard(
-                title = "Тема",
-                selectedValue = themeMode.label,
-                options = themeOptions.map { it.label },
+                title = tr(TextId.THEME),
+                selectedValue = tr(themeMode.labelId),
+                options = themeOptions.map { tr(it.labelId) },
                 selectedIndex = themeOptions.indexOf(themeMode),
                 onSelect = { onThemeModeChange(themeOptions[it]) }
             )
@@ -1807,9 +2486,9 @@ internal fun SettingsScreen(
 
         item {
             SettingsDropdownCard(
-                title = "Язык",
-                selectedValue = appLanguage.label,
-                options = languageOptions.map { it.label },
+                title = tr(TextId.LANGUAGE),
+                selectedValue = tr(appLanguage.labelId),
+                options = languageOptions.map { tr(it.labelId) },
                 selectedIndex = languageOptions.indexOf(appLanguage),
                 onSelect = { onAppLanguageChange(languageOptions[it]) }
             )
@@ -1817,9 +2496,9 @@ internal fun SettingsScreen(
 
         item {
             SettingsDropdownCard(
-                title = "Размер шрифта",
-                selectedValue = accessibilityFontScale.label,
-                options = fontScaleOptions.map { it.label },
+                title = tr(TextId.FONT_SIZE),
+                selectedValue = tr(accessibilityFontScale.labelId),
+                options = fontScaleOptions.map { tr(it.labelId) },
                 selectedIndex = fontScaleOptions.indexOf(accessibilityFontScale),
                 onSelect = { onAccessibilityFontScaleChange(fontScaleOptions[it]) }
             )
@@ -1827,7 +2506,17 @@ internal fun SettingsScreen(
 
         item {
             SettingsToggleCard(
-                title = "Анонимная диагностика",
+                title = tr(TextId.PROTECTION_AT_STARTUP),
+                subtitle = tr(TextId.REQUIRE_THE_DEVICE_SCREEN_LOCK_AT_STARTUP_AND_USE_IT_TO_PROTECT_SSH_KEYS),
+                checked = secretProtectionEnabled,
+                onCheckedChange = onSecretProtectionEnabledChange
+            )
+        }
+
+        item {
+            SettingsToggleCard(
+                title = tr(TextId.ANONYMOUS_DIAGNOSTICS),
+                subtitle = tr(TextId.TELEMETRY_OFF_BY_DEFAULT),
                 checked = telemetryEnabled,
                 onCheckedChange = onTelemetryEnabledChange
             )
@@ -1838,8 +2527,10 @@ internal fun SettingsScreen(
 @Composable
 private fun SettingsToggleCard(
     title: String,
+    subtitle: String? = null,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1854,25 +2545,36 @@ private fun SettingsToggleCard(
                 .border(1.dp, appGrayControlBorderColor(), CardShape)
                 .semantics(mergeDescendants = true) {
                     role = Role.Switch
-                    stateDescription = tr(if (checked) "Включено" else "Выключено")
+                    stateDescription = tr(if (checked) TextId.ON else TextId.OFF)
                 }
-                .clickable(role = Role.Switch) { onCheckedChange(!checked) }
+                .clickable(enabled = enabled, role = Role.Switch) { onCheckedChange(!checked) }
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = title,
-                color = appTextPrimaryColor(),
-                fontSize = 15.sp,
-                lineHeight = 20.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = appTextPrimaryColor(),
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                subtitle?.let {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = it,
+                        color = appTextSecondaryColor(),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
             Spacer(Modifier.width(14.dp))
             androidx.compose.material3.Switch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
+                enabled = enabled,
                 colors = androidx.compose.material3.SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
                     checkedTrackColor = AppAccent,
@@ -1912,7 +2614,7 @@ private fun SettingsDropdownCard(
                     .heightIn(min = 60.dp)
                     .semantics(mergeDescendants = true) {
                         role = Role.Button
-                        stateDescription = tr(if (expanded) "Развернуто" else "Свернуто")
+                        stateDescription = tr(if (expanded) TextId.EXPANDED else TextId.COLLAPSED)
                     }
                     .clickable(role = Role.Button) { expanded = !expanded }
                     .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1958,7 +2660,7 @@ private fun SettingsDropdownCard(
                                 .background(appSurfaceColor())
                                 .semantics(mergeDescendants = true) {
                                     role = Role.RadioButton
-                                    stateDescription = tr(if (selected) "Выбрано" else "Не выбрано")
+                                    stateDescription = tr(if (selected) TextId.SELECTED else TextId.NOT_SELECTED)
                                 }
                                 .clickable(role = Role.RadioButton) {
                                     onSelect(index)
@@ -2004,20 +2706,20 @@ internal fun MenuScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         MenuNavButton(
-            label = "Управление серверами",
-            subtitle = "Установка Relay и управление комнатами",
+            label = tr(TextId.MANAGE_SERVERS),
+            subtitle = tr(TextId.RELAY_INSTALLATION_AND_ROOM_MANAGEMENT),
             icon = Icons.Filled.GridView,
             onClick = onServers
         )
         MenuNavButton(
-            label = "Настройки",
-            subtitle = "Тема, язык и приватность",
+            label = tr(TextId.SETTINGS),
+            subtitle = tr(TextId.THEME_LANGUAGE_AND_PRIVACY),
             icon = Icons.Filled.Settings,
             onClick = onSettings
         )
         MenuNavButton(
-            label = "О приложении",
-            subtitle = "Версия и информация о приложении",
+            label = tr(TextId.ABOUT),
+            subtitle = tr(TextId.VERSION_AND_APP_INFORMATION),
             icon = Icons.Filled.Info,
             onClick = onAbout
         )
@@ -2105,14 +2807,14 @@ internal fun AboutScreen(appVersion: String) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "О приложении",
+            text = tr(TextId.ABOUT),
             color = appTextPrimaryColor(),
             fontSize = 22.sp,
         )
-        Text("Версия: $appVersion", color = appTextSecondaryColor(), fontSize = 14.sp)
+        Text(tr(TextId.VERSION_LABEL, appVersion), color = appTextSecondaryColor(), fontSize = 14.sp)
 
         Text(
-            text = "Поддержка",
+            text = tr(TextId.NEWS_AND_UPDATES),
             color = appTextPrimaryColor(),
             fontSize = 17.sp,
             fontWeight = FontWeight.SemiBold,
@@ -2120,8 +2822,40 @@ internal fun AboutScreen(appVersion: String) {
         )
 
         MenuNavButton(
-            label = "Поддержка в Telegram",
-            subtitle = "@symposium_support_bot",
+            label = tr(TextId.TELEGRAM_CHANNEL),
+            subtitle = tr(TextId.TELEGRAM_CHANNEL_ADDRESS),
+            icon = Icons.Filled.Campaign,
+            onClick = {
+                openExternalIntent(
+                    context,
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/symposium_app"))
+                )
+            }
+        )
+
+        MenuNavButton(
+            label = tr(TextId.OFFICIAL_WEBSITE),
+            subtitle = tr(TextId.OFFICIAL_WEBSITE_ADDRESS),
+            icon = Icons.Filled.Language,
+            onClick = {
+                openExternalIntent(
+                    context,
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://symposium-dp.app"))
+                )
+            }
+        )
+
+        Text(
+            text = tr(TextId.SUPPORT),
+            color = appTextPrimaryColor(),
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        MenuNavButton(
+            label = tr(TextId.TELEGRAM_SUPPORT),
+            subtitle = tr(TextId.TELEGRAM_SUPPORT_ADDRESS),
             icon = Icons.Filled.SupportAgent,
             onClick = {
                 openExternalIntent(
@@ -2135,8 +2869,8 @@ internal fun AboutScreen(appVersion: String) {
         )
 
         MenuNavButton(
-            label = "Электронная почта",
-            subtitle = "support@symposium-dp.app",
+            label = tr(TextId.EMAIL),
+            subtitle = tr(TextId.SUPPORT_EMAIL_ADDRESS),
             icon = Icons.Filled.Email,
             onClick = {
                 openExternalIntent(
@@ -2156,7 +2890,7 @@ private fun openExternalIntent(context: Context, intent: Intent) {
         .onFailure {
             Toast.makeText(
                 context,
-                tr("Не удалось открыть приложение"),
+                tr(TextId.COULD_NOT_OPEN_THE_APP),
                 Toast.LENGTH_SHORT
             ).show()
         }

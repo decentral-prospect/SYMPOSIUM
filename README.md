@@ -43,9 +43,9 @@ The application connects to self-hosted Symposium Relay servers and uses WebRTC 
 
 
 
-Symposium uses its own minimal telemetry service. Without diagnostic consent it sends only a random installation ID, the app version, installation and launch events, a daily installed heartbeat, and diagnostic-consent changes. Android cannot reliably report its own uninstall; the server labels long-inactive installations as likely removed instead.
+Symposium uses its own minimal telemetry service. Telemetry is disabled by default and no installation ID, lifecycle event, consent event, or diagnostic data is transmitted until the user explicitly opts in.
 
-After explicit consent, Symposium sends a limited set of anonymous operational metrics to improve reliability.
+After explicit consent, Symposium sends a limited set of anonymous lifecycle and operational metrics to improve reliability. Revoking consent immediately stops delivery and clears queued telemetry identifiers and events on the device.
 
 
 
@@ -65,32 +65,9 @@ Examples include:
 
 No conference content, audio, video, messages, or participant identities are transmitted through telemetry systems.
 
-Set `TELEMETRY_ENDPOINT` and `TELEMETRY_TOKEN` as Gradle properties or
-environment variables to enable delivery. If the endpoint is empty, no telemetry
-leaves the device. Do not commit these values to `gradle.properties`. Values
-embedded in an Android APK can be extracted and are not a strong secret boundary.
-
-
-
-## Project Status
-
-
-
-The project is under active development.
-
-
-
-Current priorities:
-
-
-
-* Stability improvements
-
-* Security hardening
-
-* Accessibility enhancements
-
-* Large-scale testing under restricted network conditions
+Set `TELEMETRY_ENDPOINT` as a Gradle property or environment variable to enable
+delivery. If the endpoint is empty, no telemetry leaves the device. The public
+ingest endpoint is protected server-side by IP validation and request limits.
 
 
 ## Media end-to-end encryption
@@ -119,38 +96,6 @@ observers, nor room membership and track metadata from the relay. Anyone who
 obtains an invitation gets the room secret. This first version uses a shared room
 key and does not yet provide MLS-style member-specific keys, forward secrecy, or
 post-compromise security; closing and reopening a room creates a fresh secret.
-
-
-## End-to-end media tests
-
-The relay has in-process tests for signaling and relayed Opus/VP8 RTP, plus an
-AES-GCM wire-format test that rejects modified ciphertext:
-
-```bash
-cd ../S-server
-go test -run TestMediaTrafficE2EAudioAndVideo -v
-```
-
-The Android E2E launches the real activity, call service, signaling client,
-microphone, camera, and split WebRTC peer connections against a standalone relay.
-An independent host peer encrypts media for Android, authenticates Android's
-encrypted media in the reverse direction, and verifies that the room secret never
-appears in the relay log. Start an Android emulator or connect a device, then run:
-
-```bash
-./scripts/android-media-e2e.sh
-```
-
-The runner defaults to the Android Emulator host alias `10.0.2.2`. For a physical
-device, set `SYMPOSIUM_E2E_RELAY_HOST` to the development machine's LAN address.
-Set `SYMPOSIUM_RELAY_DIR` to an explicit `symposium-relay` checkout when it is
-not available at the legacy sibling path; `SYMPOSIUM_RELAY_REVISION` can require
-an exact tag or commit.
-An AVD without an audio input can test every path except Android outbound audio
-with `SYMPOSIUM_ANDROID_E2E_REQUIRE_OUTBOUND_AUDIO=false`; physical-device and CI
-runs require it by default.
-
-
 
 
 ## License

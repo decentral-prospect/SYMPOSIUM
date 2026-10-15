@@ -27,3 +27,6 @@ local.properties
 
 # Symposium bundled server binary
 app/src/main/assets/symposium/symposium-server-linux-amd64
+
+# Relay source checkout and Go module sources used by source builds
+/.relay-work/

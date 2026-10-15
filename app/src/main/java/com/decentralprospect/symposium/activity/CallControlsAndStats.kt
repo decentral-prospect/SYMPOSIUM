@@ -12,14 +12,14 @@ internal fun CallRuntime.toggleMic() {
         runCatching { localAudioTrack?.setEnabled(false) }
         setMicUi()
         sendSelfMediaState(audioEnabled = false)
-        Toast.makeText(appContext, tr("Микрофон выключен модератором"), Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, tr(TextId.MICROPHONE_MUTED_BY_MODERATOR), Toast.LENGTH_SHORT).show()
         return
     }
 
     if (!joinedRoom || lobbyWaiting || webSocket == null) {
         micEnabledState = false
         setMicUi()
-        Toast.makeText(appContext, tr("Сначала подключитесь к комнате"), Toast.LENGTH_SHORT).show()
+        Toast.makeText(appContext, tr(TextId.JOIN_A_ROOM_FIRST), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -48,6 +48,10 @@ internal fun CallRuntime.toggleVideo() {
 
     if (videoEnabledState) {
         videoEnabledState = false
+        startCallService(
+            microphone = micEnabledState && !forcedMutedByModerator,
+            camera = false
+        )
         cameraWatchdogHandler.removeCallbacksAndMessages(null)
         runCatching { localVideoTrack?.setEnabled(false) }
         runCatching { videoCapturer?.stopCapture() }
@@ -174,9 +178,6 @@ internal fun CallRuntime.disconnect() {
     intentionalDisconnect = true
     runCatching { webSocket?.close(1000, "bye") }
     teardown()
-    lastE2eeSecret = ""
-    lastModKey = ""
-    reconnectToken = ""
 }
 
 internal fun CallRuntime.teardown() {
@@ -184,6 +185,17 @@ internal fun CallRuntime.teardown() {
     nextSubscribeGeneration()
 
     if (!reconnectMode || intentionalDisconnect) {
+        // Only an active reconnect may keep credentials. Server termination,
+        // version rejection and service destruction also reach teardown directly.
+        stopReconnectMode()
+        lastE2eeSecret = ""
+        lastModKey = ""
+        lastRoomInstance = ""
+        reconnectToken = ""
+        lastWsUrl = ""
+        lastRoom = ""
+        lastUsername = ""
+        lastTlsPin = ""
         finishConferenceTelemetry(
             reason = if (intentionalDisconnect) "user-disconnect" else "teardown",
             normal = intentionalDisconnect
