@@ -1,0 +1,1084 @@
+# version=17
+# text_id	language_code	text_value
+
+# ===== Русский =====
+
+# [1000-1999] Общие элементы
+1001	ru	Действие
+1002	ru	Добавить
+1003	ru	Назад
+1004	ru	Отмена
+1005	ru	Проверить
+1006	ru	Закрыть
+1007	ru	Закрыть окно
+1008	ru	Продолжить
+1009	ru	Скопировано
+1010	ru	Копировать
+1011	ru	Создать
+1012	ru	Удалить
+1013	ru	Готово
+1014	ru	Скачать
+1015	ru	Редактировать
+1016	ru	Включить
+1017	ru	Ошибка
+1018	ru	Исправить
+1019	ru	Понятно
+1020	ru	Вернуться
+1021	ru	Скрыть
+1022	ru	Инфо: {0}
+1023	ru	Установить
+1024	ru	Токен
+1025	ru	Загрузка
+1026	ru	Имя
+1027	ru	Нет
+1028	ru	Выключено
+1029	ru	Включено
+1030	ru	Открыт
+1031	ru	Открыть
+1032	ru	нет прав доступа
+1033	ru	Обновить
+1034	ru	Отклонить
+1035	ru	Выгнать
+1036	ru	Повторяем попытку подключения…
+1037	ru	Сохранить
+1038	ru	Выбрать
+1039	ru	Поделиться
+1040	ru	Системный
+1041	ru	Недоступно
+1042	ru	Неизвестная ошибка
+1043	ru	Да
+1044	ru	IP: {0}
+1045	ru	Telegram
+1046	ru	E2EE
+1047	ru	SYMPOSIUM
+1048	ru	Не сейчас
+
+# [2000-2999] Главный экран и подключение
+2001	ru	Принять новый TLS pin
+2002	ru	Добавить сервер
+2003	ru	Впускать без подтверждения
+2004	ru	После покупки нажмите «Добавить», введите IP, логин и пароль. При первом подключении подтвердите SSH-ключ, затем установите SymposiumRelay. После установки сервер появится в списке для создания встреч.
+2005	ru	Лучше не брать сервера у провайдеров, которые попадают под ограничения в регионе участников. Так например сервера от Hetzner и DigitalOcean в России подвергаются ограничениям и работать не будут!
+2006	ru	Для конференции нужен обычный VPS: маленький виртуальный сервер с публичным IPv4 и SSH-доступом. Приложение само установит на него SymposiumRelay
+2007	ru	Для установки нужен настроенный SSH-ключ
+2008	ru	Для установки нужен настроенный SSH-ключ. Добавьте сервер заново
+2009	ru	Для обновления нужен настроенный SSH-ключ
+2010	ru	На этом сервере ещё нельзя создать встречу. Сперва установите SymposiumRelay
+2011	ru	VPS или облачный сервер на Debian/Ubuntu. Минимум: 1 vCPU и 2 GB RAM. Лучше: 2vCPU и 2 GB RAM. Обязательно нужен публичный IPv4
+2012	ru	Отменить подключение
+2013	ru	Сменить токен модератора
+2014	ru	Покупать стоит у крупных VPS провайдеров не попадающих под ограничения в регионе участников конференции
+2015	ru	Выберите операционную систему Debian, или Ubuntu. Включите IPv4. Сохраните IP-адрес, логин и пароль
+2016	ru	Закрыть комнату
+2017	ru	Свернуто
+2018	ru	Свёрнуто
+2019	ru	Подключиться
+2020	ru	Подключаемся к комнате
+2021	ru	Токен приглашения
+2022	ru	Токен приглашения без прав модератора
+2023	ru	Не удалось подключиться
+2024	ru	Не удалось передать QR-код
+2025	ru	Создать встречу
+2026	ru	Fingerprint E2EE-ключа
+2027	ru	Не удалось включить сквозное шифрование.
+2028	ru	Устанавливаем защищённое соединение…
+2029	ru	Развернуто
+2030	ru	Развёрнуто
+2031	ru	Первое подключение к серверу {0}. Пароль ещё не отправлялся. Если IP указан верно, приложение запомнит fingerprint и предупредит при его изменении.
+2032	ru	Как настроить при покупке
+2033	ru	Установить SymposiumRelay
+2034	ru	IP адрес
+2035	ru	Подключение к конференции
+2036	ru	Токен с правами управления комнатой
+2037	ru	Логин
+2038	ru	Токен приглашения
+2039	ru	moderator_key не получен
+2040	ru	Заглушить всех
+2041	ru	Имя (необязательно)
+2042	ru	Новая встреча
+2043	ru	Участники конференции по умолчанию заглушены.
+2044	ru	Не телефонный разговор
+2045	ru	Открыть комнату
+2046	ru	Открытые комнаты
+2047	ru	Открытых комнат: {0}
+2048	ru	Участники подключаются, минуя зал ожидания
+2049	ru	Пароль
+2050	ru	Вставьте токен приглашения
+2051	ru	Готовим подключение…
+2052	ru	Ранее сохранённый TLS pin
+2053	ru	QR-код
+2054	ru	Обновление списка комнат
+2055	ru	Обновление списка серверов
+2056	ru	Обновить список комнат
+2057	ru	Обновить список серверов
+2058	ru	Комната: {0}
+2059	ru	Название комнаты
+2060	ru	Настройки комнаты
+2061	ru	Версия комнаты
+2062	ru	Сохранённый TLS pin
+2063	ru	Сохранить настройки
+2064	ru	Выберите сервер, на котором будет открыта новая комната.
+2065	ru	Сервер и порт: {0}
+2066	ru	Сервер требует обновления
+2067	ru	SymposiumRelay не установлен
+2068	ru	SymposiumRelay не установлен. Нажмите, чтобы установить.
+2069	ru	Нажмите, чтобы открыть
+2070	ru	Серверов пока нет. Для создания встречи добавьте сервер
+2071	ru	Нет adminToken. Нажмите, чтобы переустановить Relay.
+2072	ru	Токен содержит некорректный ключ шифрования.
+2073	ru	Токен не распознан. Вставьте токен приглашения SYMPOSIUM
+2074	ru	Токен не распознан. Вставьте токен приглашения SYMPOSIUM
+2075	ru	Не удалось проверить защищённое соединение с сервером.
+2076	ru	Сервер отклонил подключение.
+2077	ru	Нет TLS pin. Нажмите, чтобы переустановить Relay.
+2078	ru	TLS pin из токена и fingerprint E2EE-ключа.
+2079	ru	Первое подключение к {0}. Сертификат сервера (TLS pin) будет сохранён после успешного подключения
+2080	ru	Новый TLS pin принят только для этой попытки. Он заменит сохранённый pin после успешного подключения.
+2081	ru	Внимание: TLS pin сервера изменился. Это может означать переустановку сервера или попытку перехвата соединения. Проверьте новый pin по доверенному каналу.
+2082	ru	TLS pin из токена
+2083	ru	Сертификат сервера (TLS pin) совпадает с сохранённым ранее
+2084	ru	Запомнить
+2085	ru	Запомнить SSH-ключ
+2086	ru	Для продолжения обновите SymposiumRelay на этом сервере
+2087	ru	Сначала обновите SymposiumRelay на выбранном сервере
+2088	ru	Обновить
+2089	ru	Не удалось подтвердить актуальность версии. Нажмите, чтобы проверить снова.
+2090	ru	Ожидание допуска
+2091	ru	Ожидаем решения модератора…
+2092	ru	Дождитесь успешной проверки версии SymposiumRelay
+2093	ru	ВНИМАНИЕ: QR содержит E2EE-ключ и modKey. Передавайте его только доверенному получателю.
+2094	ru	ВНИМАНИЕ: QR содержит E2EE-ключ. Передавайте его только доверенному получателю.
+2095	ru	Что делать дальше?
+2096	ru	Что покупать?
+2097	ru	Где взять сервер?
+2098	ru	Где лучше покупать?
+2099	ru	Где не стоит покупать?
+2100	ru	Вы можете оставить поле "Имя" пустым
+2101	ru	Вы подключились как гость. Модератор должен впустить вас в комнату.
+2102	ru	Первое подключение к серверу {0}. Если IP указан верно, приложение запомнит fingerprint и предупредит при его изменении.
+2103	ru	Не удалось сохранить данные доверия: {0}
+
+# [3000-3999] Звонок и модерация
+3001	ru	Впустить
+3002	ru	Все гости заглушены
+3003	ru	Может говорить
+3004	ru	Выбрать вывод звука
+3005	ru	Очистить поиск
+3006	ru	Завершить звонок
+3007	ru	Сквозное шифрование включено
+3008	ru	Увеличить миниатюру
+3009	ru	Гость
+3010	ru	Гости могут говорить
+3011	ru	✋ Рука
+3012	ru	Скрыть миниатюру
+3013	ru	В лобби: {0} · Участников: {1} · Руки: {2}
+3014	ru	Опустить руку
+3015	ru	Микрофон заблокирован модератором
+3016	ru	Микрофон выключен
+3017	ru	Микрофон включён
+3018	ru	МОД
+3019	ru	Панель модерации
+3020	ru	Модератор
+3021	ru	Панель модератора
+3022	ru	Заглушить
+3023	ru	Заглушён
+3024	ru	Мьют
+3025	ru	Заглушить всех
+3026	ru	Выключить микрофон
+3027	ru	Качество сети: {0} из 5, задержка {1} мс
+3028	ru	Нет данных о качестве сети
+3029	ru	Не выбрано
+3030	ru	Участники не найдены
+3031	ru	Выкл.
+3032	ru	Вкл.
+3033	ru	Участники
+3034	ru	Закреплено
+3035	ru	Поднять руку
+3036	ru	ПЕРЕПОДКЛЮЧЕНИЕ
+3037	ru	Вернуться к звонку
+3038	ru	Поиск участников
+3039	ru	Выбрано
+3040	ru	Уменьшить миниатюру
+3041	ru	Перевернуть камеру
+3042	ru	Других участников пока нет.
+3043	ru	В лобби никого нет.
+3044	ru	Сменить вид
+3045	ru	Выключить камеру
+3046	ru	Включить камеру
+3047	ru	Разглушить
+3048	ru	Размьют
+3049	ru	Включить микрофон
+3050	ru	Камера выключена
+3051	ru	Камера включена
+3052	ru	Ожидают входа
+3053	ru	ждёт входа
+3054	ru	ждут входа
+3055	ru	Участники · {0}
+3056	ru	✋ {0}
+3057	ru	Показать сетку
+3058	ru	Показать собеседника
+3059	ru	Развернуть видео
+3060	ru	Свернуть видео
+3061	ru	Открепить видео и показывать говорящего
+3062	ru	Закрыть поиск
+3063	ru	Видео: {0}
+
+# [4000-4999] Серверы и комнаты
+4001	ru	На этом сервере нельзя создать встречу: SymposiumRelay не установлен
+4002	ru	Комната с таким названием уже открыта
+4003	ru	Комната "{0}" будет закрыта на сервере {1}
+4004	ru	Закрыть комнату?
+4005	ru	Сначала подтвердите новый TLS pin
+4006	ru	Не удалось закрыть комнату
+4007	ru	Не удалось создать встречу
+4008	ru	Не удалось установить SymposiumRelay
+4009	ru	Не удалось открыть приложение
+4010	ru	Не удалось обновить серверы
+4011	ru	Укажите IP, логин и пароль
+4012	ru	Главная
+4013	ru	Управление серверами
+4014	ru	Установка Relay и управление комнатами
+4015	ru	Relay установлен, но приложение не получило TLS pin или adminToken. Переустановите SymposiumRelay.
+4016	ru	Версия клиента не соответствует версии сервера. Необходима версия {0}.
+4017	ru	Старый токен перестанет работать. Активные модераторы комнаты "{0}" будут отключены; гости останутся в комнате.
+4019	ru	SymposiumRelay установлен
+4020	ru	SymposiumRelay обновлён
+4021	ru	Нажмите ещё раз, чтобы выйти
+4022	ru	Тема, язык и приватность
+4023	ru	Этот сервер уже добавлен
+4024	ru	Не удалось создать токен комнаты
+
+# [5000-5999] Установка и обновление релея
+5002	ru	Добавьте сервер, чтобы начать установку
+5003	ru	Добавить комнату
+5004	ru	Найдена существующая установка; полное удаление перед новой установкой…
+5005	ru	Во время установки найден существующий сервис; полное удаление…
+5006	ru	APT занят другим процессом
+5007	ru	Назад к серверам
+5008	ru	Очистка…
+5009	ru	Свернуть комнату
+5010	ru	Свернуть комнаты
+5011	ru	команда не найдена
+5013	ru	Подключение к серверу…
+5014	ru	Не удалось проверить сервер по SSH
+5015	ru	Не удалось настроить вход по SSH-ключу
+5016	ru	Не удалось подключиться к серверу
+5017	ru	Не удалось установить маркер установки
+5018	ru	Не удалось создать комнату
+5019	ru	не удалось скачать файл сервера
+5020	ru	Не удалось установить новую версию SymposiumRelay
+5021	ru	Не удалось подготовить каталог установщика
+5022	ru	Не удалось обновить открытые комнаты
+5023	ru	Не удалось обновить токен модератора
+5024	ru	Не удалось обновить сервер
+5025	ru	Не удалось обновить состояние сервера
+5026	ru	Не удалось удалить SymposiumRelay
+5027	ru	Не удалось удалить старую установку
+5028	ru	Не удалось удалить старую версию SymposiumRelay
+5029	ru	Не удалось получить SSH-ключ сервера
+5030	ru	Не удалось сохранить настройки комнаты
+5031	ru	Удалить сервер
+5032	ru	Скачивание SymposiumRelay из GitHub Release…
+5033	ru	Введите название комнаты
+5034	ru	Введите имя комнаты
+5035	ru	Укажите корректный IP адрес
+5036	ru	Заполните IP, пользователя и пароль
+5037	ru	Развернуть комнату
+5038	ru	Развернуть комнаты
+5039	ru	Резервный файл сервера
+5040	ru	файл не найден
+5041	ru	QR гостя
+5042	ru	HTTPS готов
+5047	ru	Если сервер был переустановлен или вы не уверены в сети, проверьте fingerprint через панель VPS/консоль сервера перед продолжением.
+5048	ru	Не удалось выполнить установку
+5049	ru	Установка SymposiumRelay
+5052	ru	Логи последней операции
+5053	ru	Токены готовы
+5056	ru	Нет moderator_key
+5057	ru	Токен модератора обновлён
+5058	ru	Токен модератора недоступен
+5059	ru	QR модератора
+5060	ru	Новый сервер
+5061	ru	ошибка Nginx
+5062	ru	Пока пусто
+5063	ru	Операция завершена успешно
+5064	ru	операция не выполнена
+5065	ru	Pin получен
+5066	ru	Подготовка файлов…
+5067	ru	Пересоздайте комнату
+5068	ru	Сменить токен
+5069	ru	Сменить токен модератора
+5070	ru	Сменить токен модератора?
+5071	ru	Переустановите SymposiumRelay.
+5072	ru	Relay удалён
+5073	ru	Не удалось подтвердить актуальность версии SymposiumRelay
+5074	ru	Удалить сервер {0} из приложения? SymposiumRelay на сервере не удаляется.
+5075	ru	Удалить SymposiumRelay
+5076	ru	Удаление Relay…
+5077	ru	Удаление SymposiumRelay
+5078	ru	Повторный запуск с резервным файлом…
+5079	ru	Комнаты
+5080	ru	Добавление комнаты станет доступно после проверки версии SymposiumRelay
+5081	ru	Ошибка управления комнатой
+5082	ru	Настройки комнаты сохранены
+5083	ru	нужны права root
+5084	ru	Старый токен комнаты "{0}" перестанет работать. Активные модераторы будут отключены; гости останутся в комнате.
+5085	ru	Скрипт
+5086	ru	Сервер успешно добавлен
+5087	ru	Сервер готов
+5089	ru	Ошибка SSH-сертификата сервера: ключ сервера не прошёл проверку.
+5090	ru	Не удалось полностью удалить найденный сервис
+5092	ru	Ошибка SSH-аутентификации: неверный логин или пароль
+5093	ru	Ошибка SSH-аутентификации: неверный логин или пароль.
+5094	ru	Ошибка SSH: X25519 не поддерживается
+5095	ru	SSH готов
+5096	ru	1/8 Проверка
+5097	ru	2/8 Зависимости
+5098	ru	3/8 Файрвол
+5099	ru	4/8 Токен
+5100	ru	5/8 Сервис
+5101	ru	6/8 Запуск
+5102	ru	8/8 Проверка
+5103	ru	SymposiumRelay найден, но его параметры не удалось синхронизировать
+5104	ru	Открытых комнат нет.
+5106	ru	Существующая установка полностью удалена
+5107	ru	Существующая установка удалена; запуск новой установки…
+5108	ru	GitHub Release недоступен; используется резервный файл из приложения…
+5109	ru	Установщик не вернул TLS pin
+5111	ru	Для части серверов не удалось заменить старый пароль SSH-ключом. Добавьте их заново.
+5112	ru	SSH-соединение разорвано сервером во время аутентификации.
+5113	ru	Сервер не подтвердил версию комнаты. Переустановите SymposiumRelay.
+5115	ru	SSH-ключ сервера ещё не принят. Сначала добавьте сервер и подтвердите его ключ.
+5116	ru	TLS pin отсутствует
+5117	ru	неизвестная ошибка
+5118	ru	Для добавления комнаты обновите SymposiumRelay
+5119	ru	Обновление SymposiumRelay
+5120	ru	Пользователь
+5121	ru	WSS готов
+5122	ru	Установка завершилась с ошибкой (код {0})
+5123	ru	Обновление завершилось с ошибкой (код {0})
+5124	ru	Удаление SymposiumRelay завершилось с ошибкой (код {0})
+5125	ru	Не удалось удалить старый сервис {0}
+5126	ru	{0}: выполнено {1}%
+5127	ru	{0}: повтор {1}/{2}
+5128	ru	SSH: повтор {0}/{1}
+5129	ru	Ошибка установки: {0}
+5130	ru	Ошибка удаления: {0}
+5131	ru	Инфо: {0}
+5132	ru	Не удалось настроить беспарольный административный доступ через sudo. Проверьте, что пользователь имеет права sudo и введён его пароль.
+5133	ru	Не удалось записать SSH-ключ в authorized_keys с корректными правами доступа.
+5134	ru	SSH-ключ записан, но сервер отклонил вход по нему. Проверьте настройки PubkeyAuthentication и AuthorizedKeysFile на сервере.
+
+# [6000-6999] Настройка мощности релея
+6002	ru	Вещатель это пользователь с активными микрофоном и камерой.
+6003	ru	Конфигурация: до {0} вещателей
+6004	ru	До 15 вещателей
+6005	ru	До 25 вещателей
+6006	ru	До 5 вещателей
+6007	ru	До 10 вещателей
+6008	ru	Конфигурация
+6009	ru	Своя конфигурация: до {0} пользователей на сервере
+6010	ru	Своя конфигурация
+6011	ru	Задайте собственные ограничения SymposiumRelay
+6012	ru	Заполните все поля целыми числами
+6013	ru	1 vCPU / 2 ГБ RAM / 200 Мбит/с
+6014	ru	2 vCPU / 4 ГБ RAM / 200 Мбит/с
+6015	ru	4 vCPU / 8 ГБ RAM / 400 Мбит/с
+6016	ru	8 vCPU / 16 ГБ RAM / 1 Гбит/с
+6017	ru	ICE-память на участника, КиБ
+6018	ru	Попыток входа с соединения в минуту
+6019	ru	Максимум активных участников
+6020	ru	Одновременно обрабатываемых входов
+6021	ru	Максимум ожидающих в лобби
+6022	ru	Ожидающих ICE-кандидатов на участника
+6023	ru	Конфигурация SymposiumRelay
+6024	ru	Сервер: {0} или лучше
+6025	ru	Стандартная конфигурация: до 5 вещателей с активными микрофоном и камерой. Подходит для сервера с 1 vCPU / 2 GB RAM / 200Mbps или лучше
+6026	ru	Общая ICE-память relay, МиБ
+6027	ru	Активные участники: от 1 до 100 000
+6028	ru	Участники в лобби: от 1 до 100 000
+6029	ru	Размер лобби должен настраиваться отдельно от числа активных участников
+6030	ru	ICE-кандидаты: от 1 до 4 096 на участника
+6031	ru	ICE-память на участника: от 4 КиБ до 64 МиБ
+6032	ru	Общая ICE-память: от 4 КиБ до 64 ГиБ
+6033	ru	Общая ICE-память не может быть меньше лимита одного участника
+6034	ru	Попытки входа: от 1 до 10 000 в минуту
+6035	ru	Одновременные входы: от 1 до 10 000
+6036	ru	Некорректные параметры ёмкости relay
+6037	ru	При 1-2 вещателях комната с такой конфигурацией может вместить до {0} слушателей.
+
+# [7000-7999] Настройки и приватность
+7001	ru	Доступ к защищённым данным
+7002	ru	Доступ к защищённым данным не подтверждён
+7003	ru	Всегда использовать английский язык
+7004	ru	Всегда использовать русский язык
+7005	ru	Всегда использовать тёмную тему
+7006	ru	Всегда использовать светлую тему
+7007	ru	Системный размер шрифта Android
+7008	ru	Анонимная диагностика
+7009	ru	Анонимная диагностика выключена
+7010	ru	Анонимная диагностика включена
+7011	ru	Не удалось изменить защиту сохранённых данных
+7012	ru	Не удалось подтвердить доступ
+7013	ru	Не удалось открыть защищённые данные
+7014	ru	Тёмная
+7015	ru	Английский
+7016	ru	Управление внешней диагностикой
+7017	ru	Очень крупный
+7018	ru	Очень крупный шрифт
+7019	ru	Размер шрифта
+7020	ru	Язык
+7021	ru	Крупный
+7022	ru	Крупный шрифт
+7023	ru	Светлая
+7024	ru	Персональные данные не отправляются
+7025	ru	Персональные данные отправляться не будут
+7026	ru	Приватность
+7027	ru	Защита при запуске
+7028	ru	Запрашивать пароль устройства при запуске и защищать им SSH-ключи, токены и секреты конференций.
+7029	ru	Запрашивать пароль устройства при запуске SYMPOSIUM, если сохранены SSH-ключи или другие секреты.
+7030	ru	Русский
+7031	ru	Настройки
+7032	ru	Чтобы включить защиту, сначала настройте блокировку экрана устройства
+7033	ru	На устройстве обнаружены признаки root-доступа. Приложения с root могут читать секреты, подменять интерфейс и перехватывать данные SYMPOSIUM. Приложение продолжит работу.
+7034	ru	Защита при запуске выключена
+7035	ru	Защита при запуске включена
+7036	ru	Системная
+7037	ru	При согласии отправляются только обезличенные события установки, запуска и диагностики. Имена, комнаты, адреса серверов и содержимое конференций не передаются.
+7038	ru	До вашего согласия SYMPOSIUM не отправляет никакую телеметрию. Разрешение можно отозвать в настройках.
+7039	ru	Выключено по умолчанию; без согласия ничего не отправляется.
+7040	ru	Тема
+7041	ru	Тема: {0}
+7042	ru	По умолчанию используется язык системы
+7043	ru	По умолчанию используется тема системы
+7044	ru	Использовать язык устройства
+7045	ru	Использовать тему устройства
+7046	ru	Защита данных
+7047	ru	SYMPOSIUM может защищать SSH-ключи, токены и другие данные приложения паролем устройства или биометрией, если они настроены. Защиту можно включить сейчас или позже в настройках.
+
+# [8000-8999] О приложении и обновления
+8001	ru	О приложении
+8002	ru	Доступная версия: {0}
+8003	ru	Доступна новая версия SYMPOSIUM.
+8004	ru	Электронная почта
+8005	ru	Установленная версия: {0}
+8006	ru	Открыть сайт
+8007	ru	Поддержка
+8008	ru	Поддержка в Telegram
+8009	ru	Доступно обновление
+8010	ru	Версия и информация о приложении
+8011	ru	Версия: {0}
+8012	ru	Обновить приложение можно на сайте SYMPOSIUM. Новости о выпусках доступны в Telegram-канале.
+8013	ru	Подпишитесь на Telegram-канал и следите за сайтом SYMPOSIUM. Там публикуются обновления, новости и другая полезная информация.
+8014	ru	Новости и обновления
+8015	ru	Официальный сайт
+8016	ru	Будьте в курсе
+8017	ru	Telegram-канал
+8018	ru	symposium-dp.app
+8019	ru	@symposium_app
+8020	ru	@symposium_support_bot
+8021	ru	support@symposium-dp.app
+
+# [9000-9999] Системные и фоновые сообщения
+9001	ru	Дайте SYMPOSIUM возможность отправлять анонимную диагностику: длительность подключения, ошибки конференции, высокий ping и итог установки сервера.
+9002	ru	Во время установки найден существующий сервис; проверка…
+9003	ru	SYMPOSIUM
+9004	ru	АВТО
+9005	ru	Работающая установка найдена; конфигурация синхронизирована
+9006	ru	Звонки
+9007	ru	Идёт звонок
+9008	ru	Подключение к звонку активно
+9009	ru	Разрешение камеры отклонено
+9010	ru	Проверка версии…
+9011	ru	Закрыть встречу
+9012	ru	КОНФИДЕНЦИАЛЬНО: QR содержит E2EE-ключ и modKey. Передавайте только доверенному получателю.
+9013	ru	КОНФИДЕНЦИАЛЬНО: QR содержит E2EE-ключ. Передавайте только доверенному получателю.
+9014	ru	Конфигурация синхронизирована
+9016	ru	Введите название
+9017	ru	Укажите корректный IP адрес без протокола
+9018	ru	Введите IP, логин и пароль
+9019	ru	Помочь улучшить приложение?
+9020	ru	HTTPS-перенаправление
+9021	ru	Ошибка установки: {0}
+9022	ru	Понимаю
+9023	ru	Сначала подключитесь к комнате
+9024	ru	Удалено модератором
+9025	ru	Управляйте серверами, комнатами и настройками
+9026	ru	Меню
+9027	ru	Микрофон выключен модератором
+9028	ru	Свернуть звонок
+9029	ru	Старые установки удалены
+9030	ru	Старые установки удалены; повтор чистой установки…
+9031	ru	Найдены старые или неработающие установки; удаление…
+9032	ru	Активные голосовые звонки
+9033	ru	Открытые комнаты появятся здесь.
+9034	ru	Откройте приложение, чтобы разрешить камеру
+9035	ru	Откройте приложение, чтобы разрешить микрофон
+9036	ru	Защищённый QR-код
+9037	ru	Независимо от выбора отправляются только факт установки, запуски приложения, ежедневный сигнал установленности и изменения этого разрешения.
+9038	ru	Отклонено модератором
+9039	ru	Не актуальна · {0}
+9040	ru	Актуальная · {0}
+9041	ru	Ошибка удаления: {0}
+9042	ru	Удаление найденных неработающих установок…
+9043	ru	Комната закрыта
+9044	ru	Предупреждение безопасности
+9045	ru	Отправляет только важные технические события: длительность подключения, высокий ping, ошибки WebRTC и итог установки сервера.
+9046	ru	Передать QR-код
+9047	ru	ФОКУС
+9048	ru	SSH-ключ
+9049	ru	Версия клиента не соответствует версии сервера. Необходима версия
+9050	ru	Модератор разрешил включить микрофон
+9051	ru	Сервер отклонил подключение из-за несовместимой версии клиента.
+9052	ru	Нет TLS pin или moderator_key
+9053	ru	Касание заблокировано: другое приложение перекрывает SYMPOSIUM
+9054	ru	Голосовое соединение активно
+9055	ru	{0} ждут входа
+9056	ru	{0} ждёт входа
+9057	ru	SYMPOSIUM не сохраняет пароль сервера. Вместо него он создаст SSH-ключ и защитит доступ к нему и другим данным приложения паролем устройства, или биометрией, если они настроены
+9058	ru	Без разрешения камера останется выключенной
+9059	ru	Без разрешения микрофон останется выключенным
+9060	ru	Сменить E2EE-ключ
+9061	ru	Сменить E2EE-ключ комнаты «{0}»? Все ранее созданные токены и QR-коды перестанут расшифровывать медиа новых подключений.
+9062	ru	E2EE-ключ обновлён
+
+# ===== English =====
+
+# [1000-1999] Common
+1001	en	Action
+1002	en	Add
+1003	en	Back
+1004	en	Cancel
+1005	en	Check
+1006	en	Close
+1007	en	Close dialog
+1008	en	Continue
+1009	en	Copied
+1010	en	Copy
+1011	en	Create
+1012	en	Delete
+1013	en	Done
+1014	en	Download
+1015	en	Edit
+1016	en	Enable
+1017	en	Error
+1018	en	Fix
+1019	en	Got it
+1020	en	Go back
+1021	en	Hide
+1022	en	Info: {0}
+1023	en	Install
+1024	en	Token
+1025	en	Loading
+1026	en	Name
+1027	en	No
+1028	en	Off
+1029	en	On
+1030	en	Open
+1031	en	Open
+1032	en	permission denied
+1033	en	Refresh
+1034	en	Reject
+1035	en	Remove
+1036	en	Retrying the connection…
+1037	en	Save
+1038	en	Select
+1039	en	Share
+1040	en	System
+1041	en	Unavailable
+1042	en	Unknown error
+1043	en	Yes
+1044	en	IP: {0}
+1045	en	Telegram
+1046	en	E2EE
+1047	en	SYMPOSIUM
+1048	en	Not now
+
+# [2000-2999] Home & connection
+2001	en	Accept new TLS pin
+2002	en	Add server
+2003	en	Admit without approval
+2004	en	After purchase, tap Add and enter the IP address, login, and password. Confirm the SSH key on the first connection, then install SymposiumRelay. The server will then appear in the meeting creation list.
+2005	en	Avoid providers that are restricted in participants' regions. For example, Hetzner and DigitalOcean servers are restricted in Russia and will not work there!
+2006	en	A conference requires a regular VPS: a small virtual server with a public IPv4 address and SSH access. The app will install SymposiumRelay on it automatically
+2007	en	A configured SSH key is required for installation
+2008	en	A configured SSH key is required for installation. Add the server again
+2009	en	A configured SSH key is required for updating
+2010	en	A meeting cannot be created on this server yet. Install SymposiumRelay first
+2011	en	A VPS or cloud server running Debian or Ubuntu. Minimum: 1 vCPU and 2 GB RAM. Recommended: 2 vCPU and 2 GB RAM. A public IPv4 address is required
+2012	en	Cancel connection
+2013	en	Change moderator token
+2014	en	Choose a major VPS provider that is not restricted in the regions where conference participants are located
+2015	en	Choose Debian or Ubuntu. Enable IPv4 and save the IP address, login, and password.
+2016	en	Close room
+2017	en	Collapsed
+2018	en	Collapsed
+2019	en	Connect
+2020	en	Connecting to room
+2021	en	Invitation token
+2022	en	Invitation token without moderator permissions
+2023	en	Could not connect
+2024	en	Could not share the QR code
+2025	en	Create meeting
+2026	en	E2EE key fingerprint
+2027	en	End-to-end encryption could not be enabled.
+2028	en	Establishing a secure connection…
+2029	en	Expanded
+2030	en	Expanded
+2031	en	First connection to server {0}. The password has not been sent yet. If the IP address is correct, the app will remember the fingerprint and warn you if it changes.
+2032	en	How to configure it when buying
+2033	en	Install SymposiumRelay
+2034	en	IP address
+2035	en	Join conference
+2036	en	Token with room management permissions
+2037	en	Login
+2038	en	Invitation token
+2039	en	moderator_key was not received
+2040	en	Mute all
+2041	en	Name (optional)
+2042	en	New meeting
+2043	en	Conference participants are muted by default.
+2044	en	Not a phone conversation
+2045	en	Open room
+2046	en	Open rooms
+2047	en	Open rooms: {0}
+2048	en	Participants join without entering the waiting room
+2049	en	Password
+2050	en	Paste the invitation token
+2051	en	Preparing the connection…
+2052	en	Previously saved TLS pin
+2053	en	QR code
+2054	en	Refreshing room list
+2055	en	Refreshing server list
+2056	en	Refresh room list
+2057	en	Refresh server list
+2058	en	Room: {0}
+2059	en	Room name
+2060	en	Room settings
+2061	en	Room version
+2062	en	Saved TLS pin
+2063	en	Save settings
+2064	en	Select the server where the new room will be opened.
+2065	en	Server and port: {0}
+2066	en	Server update required
+2067	en	SymposiumRelay is not installed
+2068	en	SymposiumRelay is not installed. Tap to install it.
+2069	en	Tap to open
+2070	en	There are no servers yet. Add one to create a meeting
+2071	en	The admin token is missing. Tap to reinstall Relay.
+2072	en	The token contains an invalid encryption key.
+2073	en	The token was not recognized. Paste a SYMPOSIUM invitation token
+2074	en	The token was not recognized. Paste a SYMPOSIUM invitation token
+2075	en	The secure server connection could not be verified.
+2076	en	The server rejected the connection.
+2077	en	The TLS pin is missing. Tap to reinstall Relay.
+2078	en	TLS pin from the token and E2EE key fingerprint.
+2079	en	First connection to {0}. The server certificate (TLS pin) will be saved after a successful connection
+2080	en	The new TLS pin is accepted for this attempt only. It will replace the saved pin after a successful connection.
+2081	en	Warning: the server TLS pin has changed. This may indicate a server reinstall or an attempt to intercept the connection. Verify the new pin through a trusted channel.
+2082	en	TLS pin from token
+2083	en	The server certificate (TLS pin) matches the previously saved certificate
+2084	en	Trust
+2085	en	Trust SSH key
+2086	en	Update SymposiumRelay on this server to continue
+2087	en	Update SymposiumRelay on the selected server first
+2088	en	Update
+2089	en	Could not verify the version. Tap to check again.
+2090	en	Waiting for approval
+2091	en	Waiting for the moderator…
+2092	en	Wait for SymposiumRelay version verification to complete
+2093	en	WARNING: This QR code contains an E2EE key and modKey. Share it only with a trusted recipient.
+2094	en	WARNING: This QR code contains an E2EE key. Share it only with a trusted recipient.
+2095	en	What do I do next?
+2096	en	What should I buy?
+2097	en	Where can I get a server?
+2098	en	Where should I buy it?
+2099	en	Which providers should I avoid?
+2100	en	You can leave the Name field empty
+2101	en	You joined as a guest. A moderator must admit you to the room.
+2102	en	First connection to server {0}. If the IP address is correct, the app will remember the fingerprint and warn you if it changes.
+2103	en	Could not save trust data: {0}
+
+# [3000-3999] Call & moderation
+3001	en	Admit
+3002	en	All guests are muted
+3003	en	Can speak
+3004	en	Choose audio output
+3005	en	Clear search
+3006	en	End call
+3007	en	End-to-end encryption is on
+3008	en	Enlarge thumbnail
+3009	en	Guest
+3010	en	Guests can speak
+3011	en	✋ Hand raised
+3012	en	Hide thumbnail
+3013	en	Lobby: {0} · Participants: {1} · Hands: {2}
+3014	en	Lower hand
+3015	en	Microphone locked by moderator
+3016	en	Mic off
+3017	en	Mic on
+3018	en	MOD
+3019	en	Moderation panel
+3020	en	Moderator
+3021	en	Moderator panel
+3022	en	Mute
+3023	en	Muted
+3024	en	Mute
+3025	en	Mute all
+3026	en	Mute microphone
+3027	en	Network quality: {0} of 5, latency {1} ms
+3028	en	Network quality data is unavailable
+3029	en	Not selected
+3030	en	No participants found
+3031	en	Off
+3032	en	On
+3033	en	Participants
+3034	en	Pinned
+3035	en	Raise hand
+3036	en	RECONNECTING
+3037	en	Return to call
+3038	en	Search participants
+3039	en	Selected
+3040	en	Shrink thumbnail
+3041	en	Switch camera
+3042	en	There are no other participants yet.
+3043	en	The lobby is empty.
+3044	en	Toggle view
+3045	en	Turn camera off
+3046	en	Turn camera on
+3047	en	Unmute
+3048	en	Unmute
+3049	en	Unmute microphone
+3050	en	Video off
+3051	en	Video on
+3052	en	Waiting to join
+3053	en	is waiting to join
+3054	en	are waiting to join
+3055	en	Participants · {0}
+3056	en	✋ {0}
+3057	en	Show grid
+3058	en	Show speaker
+3059	en	Expand video
+3060	en	Collapse video
+3061	en	Unpin video and follow the speaker
+3062	en	Close search
+3063	en	Video: {0}
+
+# [4000-4999] Servers & rooms
+4001	en	A meeting cannot be created on this server because SymposiumRelay is not installed
+4002	en	A room with this name is already open
+4003	en	Room "{0}" will be closed on server {1}
+4004	en	Close the room?
+4005	en	Confirm the new TLS pin first
+4006	en	Could not close the room
+4007	en	Could not create the meeting
+4008	en	Could not install SymposiumRelay
+4009	en	Could not open the app
+4010	en	Could not refresh the servers
+4011	en	Enter the IP address, login, and password
+4012	en	Home
+4013	en	Manage servers
+4014	en	Relay installation and room management
+4015	en	Relay was installed, but the app did not receive a TLS pin or admin token. Reinstall SymposiumRelay.
+4016	en	The client version does not match the server version. Required version: {0}.
+4017	en	The old token will stop working. Active moderators in room "{0}" will be disconnected; guests will remain in the room.
+4019	en	SymposiumRelay installed
+4020	en	SymposiumRelay updated
+4021	en	Tap again to exit
+4022	en	Theme, language, and privacy
+4023	en	This server has already been added
+4024	en	Unable to create the room token
+
+# [5000-5999] Installation
+5002	en	Add a server to start installation
+5003	en	Add room
+5004	en	An existing installation was found; removing it completely before the new installation…
+5005	en	An existing service was found during installation; removing it completely…
+5006	en	APT is busy with another process
+5007	en	Back to servers
+5008	en	Cleaning up…
+5009	en	Collapse room
+5010	en	Collapse rooms
+5011	en	command not found
+5013	en	Connecting to server…
+5014	en	Could not check the server over SSH
+5015	en	Could not configure SSH key access
+5016	en	Could not connect to the server
+5017	en	Could not create the installation marker
+5018	en	Could not create the room
+5019	en	could not download the server binary
+5020	en	Could not install the new SymposiumRelay version
+5021	en	Could not prepare the installer directory
+5022	en	Could not refresh open rooms
+5023	en	Could not refresh the moderator token
+5024	en	Could not refresh the server
+5025	en	Could not refresh the server status
+5026	en	Could not remove SymposiumRelay
+5027	en	Could not remove the old installation
+5028	en	Could not remove the old SymposiumRelay version
+5029	en	Could not retrieve the server SSH key
+5030	en	Could not save the room settings
+5031	en	Delete server
+5032	en	Downloading SymposiumRelay from the GitHub Release…
+5033	en	Enter a room name
+5034	en	Enter a room name
+5035	en	Enter a valid IP address
+5036	en	Enter the IP address, user, and password
+5037	en	Expand room
+5038	en	Expand rooms
+5039	en	Fallback server binary
+5040	en	file not found
+5041	en	Guest QR code
+5042	en	HTTPS ready
+5047	en	If the server was reinstalled or you do not trust the network, verify the fingerprint in the VPS control panel or server console before continuing.
+5048	en	Installation could not be completed
+5049	en	Installing SymposiumRelay
+5052	en	Latest operation logs
+5053	en	Tokens are ready
+5056	en	moderator_key is missing
+5057	en	Moderator token refreshed
+5058	en	Moderator token unavailable
+5059	en	Moderator QR code
+5060	en	New server
+5061	en	Nginx error
+5062	en	Nothing here yet
+5063	en	Operation completed successfully
+5064	en	operation failed
+5065	en	Pin received
+5066	en	Preparing files…
+5067	en	Recreate the room
+5068	en	Change token
+5069	en	Change moderator token
+5070	en	Change moderator token?
+5071	en	Reinstall SymposiumRelay.
+5072	en	Relay removed
+5073	en	Could not verify the SymposiumRelay version
+5074	en	Remove server {0} from the app? SymposiumRelay will remain on the server.
+5075	en	Remove SymposiumRelay
+5076	en	Removing Relay…
+5077	en	Removing SymposiumRelay
+5078	en	Retrying with the fallback file…
+5079	en	Rooms
+5080	en	Adding a room will become available after the SymposiumRelay version is verified
+5081	en	Room management error
+5082	en	Room settings saved
+5083	en	root access is required
+5084	en	The old token for room "{0}" will stop working. Active moderators will be disconnected; guests will remain in the room.
+5085	en	Script
+5086	en	Server added successfully
+5087	en	Server ready
+5089	en	Server SSH key verification failed.
+5090	en	Could not completely remove the detected service
+5092	en	SSH authentication failed: incorrect login or password
+5093	en	SSH authentication failed: incorrect login or password.
+5094	en	SSH error: X25519 is not supported
+5095	en	SSH ready
+5096	en	1/8 Check
+5097	en	2/8 Dependencies
+5098	en	3/8 Firewall
+5099	en	4/8 Token
+5100	en	5/8 Service
+5101	en	6/8 Start
+5102	en	8/8 Verification
+5103	en	SymposiumRelay was found, but its settings could not be synchronized
+5104	en	There are no open rooms.
+5106	en	The existing installation was completely removed
+5107	en	The existing installation was removed; starting a new installation…
+5108	en	The GitHub Release is unavailable; using the fallback file bundled with the app…
+5109	en	The installer did not return a TLS pin
+5111	en	The old password could not be replaced with an SSH key for some servers. Add those servers again.
+5112	en	The server closed the SSH connection during authentication.
+5113	en	The server did not confirm the room version. Reinstall SymposiumRelay.
+5115	en	The server SSH key has not been trusted yet. Add the server and confirm its key first.
+5116	en	TLS pin is missing
+5117	en	unknown error
+5118	en	Update SymposiumRelay to add a room
+5119	en	Updating SymposiumRelay
+5120	en	User
+5121	en	WSS ready
+5122	en	Installation failed (code {0})
+5123	en	Update failed (code {0})
+5124	en	SymposiumRelay removal failed (code {0})
+5125	en	Could not remove the old service {0}
+5126	en	{0}: progress {1}%
+5127	en	{0}: retry {1}/{2}
+5128	en	SSH: retry {0}/{1}
+5129	en	Installation error: {0}
+5130	en	Removal error: {0}
+5131	en	Info: {0}
+5132	en	Could not configure passwordless administration through sudo. Make sure the user has sudo access and that their password was entered.
+5133	en	Could not write the SSH key to authorized_keys with the required permissions.
+5134	en	The SSH key was written, but the server rejected key authentication. Check the server's PubkeyAuthentication and AuthorizedKeysFile settings.
+
+# [6000-6999] Relay configuration
+6002	en	A speaker is a user with an active microphone and camera.
+6003	en	Configuration: up to {0} speakers
+6004	en	Up to 15 speakers
+6005	en	Up to 25 speakers
+6006	en	Up to 5 speakers
+6007	en	Up to 10 speakers
+6008	en	Configuration
+6009	en	Custom configuration: up to {0} users on the server
+6010	en	Custom configuration
+6011	en	Set custom SymposiumRelay limits
+6012	en	Enter whole numbers in every field
+6013	en	1 vCPU / 2 GB RAM / 200Mbps
+6014	en	2 vCPU / 4 GB RAM / 200Mbps
+6015	en	4 vCPU / 8 GB RAM / 400Mbps
+6016	en	8 vCPU / 16 GB RAM / 1Gbps
+6017	en	ICE memory per participant, KiB
+6018	en	Join attempts per connection per minute
+6019	en	Maximum active participants
+6020	en	Maximum concurrent joins
+6021	en	Maximum participants waiting in the lobby
+6022	en	Pending ICE candidates per participant
+6023	en	SymposiumRelay configuration
+6024	en	Server: {0} or better
+6025	en	Standard configuration: up to 5 speakers with an active microphone and camera. Suitable for a server with 1 vCPU / 2 GB RAM / 200Mbps or better
+6026	en	Total relay ICE memory, MiB
+6027	en	Active participants: 1 to 100,000
+6028	en	Lobby participants: 1 to 100,000
+6029	en	The lobby limit must be configured separately from the active participant limit
+6030	en	ICE candidates: 1 to 4,096 per participant
+6031	en	ICE memory per participant: 4 KiB to 64 MiB
+6032	en	Total ICE memory: 4 KiB to 64 GiB
+6033	en	Total ICE memory cannot be lower than the per-participant limit
+6034	en	Join attempts: 1 to 10,000 per minute
+6035	en	Concurrent joins: 1 to 10,000
+6036	en	Invalid relay capacity settings
+6037	en	With 1-2 speakers, a room with this configuration can accommodate up to {0} listeners.
+
+# [7000-7999] Settings & privacy
+7001	en	Access protected data
+7002	en	Access to protected data was not confirmed
+7003	en	Always use English
+7004	en	Always use Russian
+7005	en	Always use the dark theme
+7006	en	Always use the light theme
+7007	en	Android system font size
+7008	en	Anonymous diagnostics
+7009	en	Anonymous diagnostics disabled
+7010	en	Anonymous diagnostics enabled
+7011	en	Could not change protection for saved data
+7012	en	Could not confirm access
+7013	en	Could not open protected data
+7014	en	Dark
+7015	en	English
+7016	en	External diagnostics settings
+7017	en	Extra large
+7018	en	Extra-large font
+7019	en	Font size
+7020	en	Language
+7021	en	Large
+7022	en	Large font
+7023	en	Light
+7024	en	No personal data is sent
+7025	en	No personal data will be sent
+7026	en	Privacy
+7027	en	Protection at startup
+7028	en	Require the device screen lock at startup and use it to protect SSH keys, tokens, and conference secrets.
+7029	en	Require the device screen lock when SYMPOSIUM starts if SSH keys or other secrets are saved.
+7030	en	Russian
+7031	en	Settings
+7032	en	Set up a device screen lock before enabling startup protection
+7033	en	Signs of root access were detected on this device. Apps with root access can read secrets, spoof the interface, and intercept SYMPOSIUM data. The app will continue to work.
+7034	en	Startup protection disabled
+7035	en	Startup protection enabled
+7036	en	System
+7037	en	With consent, only anonymized installation, launch, and diagnostic events are sent. Names, rooms, server addresses, and conference content are never sent.
+7038	en	SYMPOSIUM does not send any telemetry before you consent. You can withdraw permission in Settings.
+7039	en	Off by default; nothing is sent without explicit consent.
+7040	en	Theme
+7041	en	Theme: {0}
+7042	en	The system language is used by default
+7043	en	The system theme is used by default
+7044	en	Use the device language
+7045	en	Use the device theme
+7046	en	Data protection
+7047	en	SYMPOSIUM can protect SSH keys, tokens, and other app data with your device password or biometrics, if configured. You can enable this protection now or later in Settings.
+
+# [8000-8999] About & updates
+8001	en	About
+8002	en	Available version: {0}
+8003	en	A new version of SYMPOSIUM is available.
+8004	en	Email
+8005	en	Installed version: {0}
+8006	en	Open website
+8007	en	Support
+8008	en	Telegram support
+8009	en	Update available
+8010	en	Version and app information
+8011	en	Version: {0}
+8012	en	You can update the app on the SYMPOSIUM website. Release news is available in the Telegram channel.
+8013	en	Subscribe to the Telegram channel and follow the SYMPOSIUM website for updates, news, and other useful information.
+8014	en	News and updates
+8015	en	Official website
+8016	en	Stay up to date
+8017	en	Telegram channel
+8018	en	symposium-dp.app
+8019	en	t.me/symposium_app
+8020	en	@symposium_support_bot
+8021	en	support@symposium-dp.app
+
+# [9000-9999] System & background
+9001	en	Allow SYMPOSIUM to send anonymous diagnostics: connection duration, conference errors, high ping, and server installation results.
+9002	en	An existing service was found during installation; checking…
+9003	en	SYMPOSIUM
+9004	en	AUTO
+9005	en	A healthy installation was found; configuration synchronized
+9006	en	Calls
+9007	en	Call in progress
+9008	en	Listening in call
+9009	en	Camera permission denied
+9010	en	Checking version…
+9011	en	Close meeting
+9012	en	CONFIDENTIAL: This QR code contains an E2EE key and modKey. Share it only with a trusted recipient.
+9013	en	CONFIDENTIAL: This QR code contains an E2EE key. Share it only with a trusted recipient.
+9014	en	Configuration synchronized
+9016	en	Enter a name
+9017	en	Enter a valid IP address without a protocol
+9018	en	Enter the IP address, login, and password
+9019	en	Help improve the app?
+9020	en	HTTPS redirect
+9021	en	Installation error: {0}
+9022	en	I understand
+9023	en	Join a room first
+9024	en	Kicked by moderator
+9025	en	Manage servers, rooms, and settings
+9026	en	Menu
+9027	en	Microphone muted by moderator
+9028	en	Minimize call
+9029	en	Old installations removed
+9030	en	Old installations removed; retrying a clean installation…
+9031	en	Old or unhealthy installations found; removing…
+9032	en	Ongoing voice calls
+9033	en	Open rooms will appear here.
+9034	en	Open the app to allow camera access
+9035	en	Open the app to allow microphone access
+9036	en	Protected QR code
+9037	en	Regardless of your choice, only installation, app launches, a daily installed-app signal, and changes to this permission are sent.
+9038	en	Rejected by moderator
+9039	en	Outdated · {0}
+9040	en	Up to date · {0}
+9041	en	Removal error: {0}
+9042	en	Removing unhealthy installations…
+9043	en	Room closed
+9044	en	Security warning
+9045	en	Sends only important technical events: connection duration, high ping, WebRTC errors, and the server installation result.
+9046	en	Share QR code
+9047	en	SPOT
+9048	en	SSH key
+9049	en	The client version does not match the server version. Required version:
+9050	en	The moderator allowed you to unmute
+9051	en	The server rejected the connection because the client version is incompatible.
+9052	en	TLS pin or moderator_key is missing
+9053	en	Touch blocked: another app is covering SYMPOSIUM
+9054	en	Voice connection active
+9055	en	{0} are waiting to join
+9056	en	{0} is waiting to join
+9057	en	SYMPOSIUM does not save the server password. Instead, it creates an SSH key and protects access to it and other app data with your device password or biometrics, if configured
+9058	en	Without permission, the camera will remain off
+9059	en	Without permission, the microphone will remain muted
+9060	en	Change E2EE key
+9061	en	Change the E2EE key for room “{0}”? Previously created tokens and QR codes will no longer decrypt media from new connections.
+9062	en	E2EE key refreshed

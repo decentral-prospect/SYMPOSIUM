@@ -164,6 +164,7 @@ internal fun CallRuntime.internalConnectWithSavedParams() {
     connect(
         url = lastWsUrl,
         room = lastRoom,
+        roomInstance = lastRoomInstance,
         username = lastUsername,
         tlsPin = lastTlsPin,
         modKey = lastModKey,

@@ -1,0 +1,25 @@
+# Merge these fields into a Builds entry in fdroiddata. Pin the Android commit,
+# versionName and versionCode there; relay tag + full SHA come from that commit's
+# relay.lock.json. Run from the Android repository root (no subdir: app).
+# F-Droid's trixie image includes trixie-backports. The default golang-go is too
+# old; select Go 1.25 explicitly and use its versioned path in both shell phases.
+sudo:
+  - apt-get update
+  - apt-get install -y build-essential git python3 jq
+  - apt-get install -y -t trixie-backports golang-1.25-go
+output: app/build/outputs/apk/release/app-release-unsigned.apk
+gradle:
+  - yes
+prebuild:
+  - export PATH=/usr/lib/go-1.25/bin:$PATH
+  - test -x /usr/lib/go-1.25/bin/go
+  - rm -f app/src/main/assets/symposium/symposium-server-linux-amd64
+  - rm -f build/relay/bundled-relay.json
+  - python3 scripts/relay-source.py fetch .relay-work/source
+  - python3 scripts/relay-source.py download-deps .relay-work/source
+# Build only after F-Droid's source scan/archive and Gradle clean. In particular,
+# do not move this into prebuild or add scanignore for the generated executable.
+build:
+  - export PATH=/usr/lib/go-1.25/bin:$PATH
+  - test -x /usr/lib/go-1.25/bin/go
+  - python3 scripts/relay-source.py build .relay-work/source

@@ -15,6 +15,9 @@ import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
+internal fun telemetryTransmissionAllowed(configured: Boolean, consentGranted: Boolean): Boolean =
+    configured && consentGranted
+
 /**
  * Small, first-party telemetry transport. It deliberately does not read Android identifiers,
  * account data, IP addresses, room names, user names, or conference content.
@@ -24,7 +27,6 @@ internal class TelemetryClient private constructor(context: Context) {
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val privacyPrefs = appContext.getSharedPreferences(PRIVACY_PREFS_NAME, Context.MODE_PRIVATE)
     private val endpoint = BuildConfig.TELEMETRY_ENDPOINT.trim().trimEnd('/')
-    private val token = BuildConfig.TELEMETRY_TOKEN.trim()
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -35,8 +37,13 @@ internal class TelemetryClient private constructor(context: Context) {
 
     val configured: Boolean get() = endpoint.startsWith("https://")
 
+    private fun consentGranted(): Boolean =
+        privacyPrefs.getBoolean(PREF_TELEMETRY_ENABLED, false)
+
+    private fun canTransmit(): Boolean = telemetryTransmissionAllowed(configured, consentGranted())
+
     fun sendLifecycleSignals() {
-        if (!configured) return
+        if (!canTransmit()) return
 
         val installationId = installationId()
         val now = System.currentTimeMillis()
@@ -52,7 +59,7 @@ internal class TelemetryClient private constructor(context: Context) {
                 id = "install:$installationId",
                 name = "app.install",
                 occurredAt = firstSeenAt,
-                consented = false,
+                consented = true,
                 attrs = emptyMap()
             )
             markers += KEY_INSTALL_SENT to 1L
@@ -63,7 +70,7 @@ internal class TelemetryClient private constructor(context: Context) {
                 id = "installed:$installationId:$day",
                 name = "app.installed",
                 occurredAt = now,
-                consented = false,
+                consented = true,
                 attrs = emptyMap()
             )
             markers += KEY_LAST_HEARTBEAT_DAY to day
@@ -80,7 +87,7 @@ internal class TelemetryClient private constructor(context: Context) {
     }
 
     fun recordDiagnostic(name: String, attrs: Map<String, Any>) {
-        if (!configured || !privacyPrefs.getBoolean(PREF_TELEMETRY_ENABLED, false)) return
+        if (!canTransmit()) return
         send(
             listOf(
                 event(
@@ -96,17 +103,28 @@ internal class TelemetryClient private constructor(context: Context) {
 
     @Synchronized
     fun recordAppLaunch() {
-        if (appLaunchRecordedInThisProcess) return
+        if (!consentGranted() || appLaunchRecordedInThisProcess) return
         appLaunchRecordedInThisProcess = true
         enqueueEssentialEvent("app.launch")
     }
 
     fun recordConsentChange(enabled: Boolean) {
-        enqueueEssentialEvent(if (enabled) "telemetry.consent.enabled" else "telemetry.consent.disabled")
+        // Consent is not retroactive: discard identifiers and events collected by older builds or
+        // by an earlier opt-in period before starting a new consented telemetry identity.
+        if (!enabled) http.dispatcher.cancelAll()
+        prefs.edit()
+            .remove(KEY_INSTALLATION_ID)
+            .remove(KEY_FIRST_SEEN_AT)
+            .remove(KEY_INSTALL_SENT)
+            .remove(KEY_LAST_HEARTBEAT_DAY)
+            .remove(KEY_PENDING_ESSENTIAL_EVENTS)
+            .apply()
+        appLaunchRecordedInThisProcess = false
+        if (enabled) enqueueEssentialEvent("telemetry.consent.enabled")
     }
 
     private fun enqueueEssentialEvent(name: String) {
-        if (!configured) return
+        if (!canTransmit()) return
         val entry = listOf(
             UUID.randomUUID().toString(),
             name,
@@ -126,7 +144,10 @@ internal class TelemetryClient private constructor(context: Context) {
     }
 
     private fun flushPendingEssentialEvents() {
-        if (!configured) return
+        if (!canTransmit()) {
+            prefs.edit().remove(KEY_PENDING_ESSENTIAL_EVENTS).apply()
+            return
+        }
         val batch = synchronized(this) {
             if (essentialFlushInFlight) return
             val parsed = prefs.getStringSet(KEY_PENDING_ESSENTIAL_EVENTS, emptySet())
@@ -145,7 +166,7 @@ internal class TelemetryClient private constructor(context: Context) {
                     id = "essential:${pending.id}",
                     name = pending.name,
                     occurredAt = pending.occurredAt,
-                    consented = false,
+                    consented = true,
                     attrs = emptyMap()
                 )
             },
@@ -200,6 +221,10 @@ internal class TelemetryClient private constructor(context: Context) {
         onAccepted: (() -> Unit)? = null,
         onFinished: ((Boolean) -> Unit)? = null
     ) {
+        if (!canTransmit()) {
+            onFinished?.invoke(false)
+            return
+        }
         val body = JSONObject()
             .put("installationId", installationId())
             .put("appVersion", BuildConfig.VERSION_NAME)
@@ -209,14 +234,14 @@ internal class TelemetryClient private constructor(context: Context) {
             .toRequestBody(JSON_MEDIA_TYPE)
 
         val url = if (endpoint.endsWith("/api/v1/events")) endpoint else "$endpoint/api/v1/events"
-        val requestBuilder = Request.Builder()
+        val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "Symposium/${BuildConfig.VERSION_NAME} (Android)")
+            .header("User-Agent", "SYMPOSIUM/${BuildConfig.VERSION_NAME} (Android)")
             .header("X-Symposium-Telemetry-Protocol", TELEMETRY_PROTOCOL_VERSION)
             .post(body)
-        if (token.isNotEmpty()) requestBuilder.header("Authorization", "Bearer $token")
+            .build()
 
-        http.newCall(requestBuilder.build()).enqueue(object : Callback {
+        http.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 diagnosticWarning(TAG, "Telemetry delivery failed: ${e.javaClass.simpleName}")
                 onFinished?.invoke(false)
@@ -255,11 +280,10 @@ internal class TelemetryClient private constructor(context: Context) {
         private const val PENDING_SEPARATOR = "|"
         private const val MAX_PENDING_ESSENTIAL_EVENTS = 512
         private const val MAX_EVENTS_PER_REQUEST = 32
-        private const val TELEMETRY_PROTOCOL_VERSION = "2"
+        private const val TELEMETRY_PROTOCOL_VERSION = "3"
         private val ESSENTIAL_EVENT_NAMES = setOf(
             "app.launch",
-            "telemetry.consent.enabled",
-            "telemetry.consent.disabled"
+            "telemetry.consent.enabled"
         )
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 

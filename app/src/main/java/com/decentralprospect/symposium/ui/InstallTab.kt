@@ -1,7 +1,5 @@
 package com.decentralprospect.symposium
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -32,7 +30,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -80,18 +77,21 @@ private data class PendingSshHostKeyTrust(
 @Composable
 fun InstallTab(
     expectedRelayVersion: String,
-    refreshNonce: Int = 0,
-    onInstall: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, logger: suspend (String) -> Unit) -> RemoteInstaller.InstallResult,
+    onAdminSessionAccess: () -> Boolean,
+    onInstall: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, relayCapacity: RelayCapacityConfig, logger: suspend (String) -> Unit) -> RemoteInstaller.InstallResult,
     onRemoveRelay: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?, deploymentProfile: DeploymentProfile?, logger: suspend (String) -> Unit) -> RemoteInstaller.RelayRemovalResult,
     onObserveSshHostKeyPin: suspend (ip: String) -> String,
+    onEnrollSshKey: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?) -> Unit,
+    onDeleteSshKey: (ip: String, login: String) -> Unit,
     onProbeServer: suspend (ip: String, login: String, password: String, expectedSshHostKeyPin: String?) -> RemoteInstaller.ProbeResult,
     onSetRoomOpenState: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, open: Boolean) -> RemoteInstaller.RoomAdminResult,
+    onCreateRoom: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, muteAllByDefault: Boolean, admitWithoutApproval: Boolean) -> RemoteInstaller.RoomAdminResult,
+    onSetRoomSettings: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String, muteAllByDefault: Boolean, admitWithoutApproval: Boolean) -> RemoteInstaller.RoomAdminResult,
     onRotateModeratorKey: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?, roomName: String) -> RemoteInstaller.RoomAdminResult,
     onFetchOpenRooms: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?) -> RemoteInstaller.RoomAdminResult,
     onFetchRelayVersion: suspend (ip: String, httpsPort: Int?, relayTlsPin: String?, adminToken: String?) -> RemoteInstaller.RelayVersionResult
 ) {
     val context = LocalContext.current
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val store = remember(context) { InstallServersStore(context) }
     val conferenceE2eeSecrets = remember(context) { ConferenceE2eeSecretStore(context) }
     val servers = remember { mutableStateListOf<InstallServer>() }
@@ -99,7 +99,7 @@ fun InstallTab(
     val installLogListState = rememberLazyListState()
 
     var qrDialogLink by remember { mutableStateOf<String?>(null) }
-    var qrDialogTitle by remember { mutableStateOf("QR-код") }
+    var qrDialogTitle by remember { mutableStateOf(tr(TextId.QR_CODE)) }
 
     var view by remember { mutableStateOf(InstallView.GRID) }
     var selectedServerId by remember { mutableStateOf<String?>(null) }
@@ -112,9 +112,6 @@ fun InstallTab(
     var addSuccessMessage by remember { mutableStateOf<String?>(null) }
     var pendingSshHostKeyTrust by remember { mutableStateOf<PendingSshHostKeyTrust?>(null) }
 
-    var fieldEditorTitle by remember { mutableStateOf<String?>(null) }
-    var fieldEditorValue by remember { mutableStateOf("") }
-    var fieldEditorSaver by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     val installLogs = remember { mutableStateListOf<String>() }
     var installing by remember { mutableStateOf(false) }
@@ -123,35 +120,33 @@ fun InstallTab(
     var roomActionName by remember { mutableStateOf("") }
     var showAddRoomDialog by remember { mutableStateOf(false) }
     var roomDialogName by remember { mutableStateOf("") }
+    var roomSettingsDialogName by remember { mutableStateOf<String?>(null) }
+    var roomSettingsMuteAllByDefault by remember { mutableStateOf(false) }
+    var roomSettingsAdmitWithoutApproval by remember { mutableStateOf(false) }
     var roomActionLoading by remember { mutableStateOf(false) }
     var pendingModeratorLinkRotationRoom by remember { mutableStateOf<String?>(null) }
+    var pendingE2eeKeyRotationRoom by remember { mutableStateOf<String?>(null) }
     var pendingDeleteServerId by remember { mutableStateOf<String?>(null) }
     var removingRelay by remember { mutableStateOf(false) }
     var updatingRelay by remember { mutableStateOf(false) }
-    var serversLoaded by remember { mutableStateOf(false) }
     var installLogsExpanded by remember(selectedServerId) { mutableStateOf(false) }
 
-    var serverParamsExpanded by remember(selectedServerId) { mutableStateOf(false) }
     var roomsExpanded by remember(selectedServerId) { mutableStateOf(false) }
     var expandedRoomName by remember(selectedServerId) { mutableStateOf<String?>(null) }
 
     val selectedServer = servers.firstOrNull { it.id == selectedServerId }
     val pendingDeleteServer = servers.firstOrNull { it.id == pendingDeleteServerId }
 
-    BackHandler(enabled = fieldEditorTitle != null || showAddRoomDialog || pendingModeratorLinkRotationRoom != null || pendingDeleteServer != null || pendingSshHostKeyTrust != null || qrDialogLink != null || view != InstallView.GRID) {
+    BackHandler(enabled = showAddRoomDialog || roomSettingsDialogName != null || pendingModeratorLinkRotationRoom != null || pendingE2eeKeyRotationRoom != null || pendingDeleteServer != null || pendingSshHostKeyTrust != null || qrDialogLink != null || view != InstallView.GRID) {
         when {
             qrDialogLink != null -> qrDialogLink = null
             pendingModeratorLinkRotationRoom != null -> {
                 if (!roomActionLoading) pendingModeratorLinkRotationRoom = null
             }
+            pendingE2eeKeyRotationRoom != null -> pendingE2eeKeyRotationRoom = null
             pendingSshHostKeyTrust != null -> {
                 pendingSshHostKeyTrust = null
                 addLoading = false
-            }
-            fieldEditorTitle != null -> {
-                fieldEditorTitle = null
-                fieldEditorSaver = null
-                fieldEditorValue = ""
             }
             showAddRoomDialog -> {
                 if (!roomActionLoading) {
@@ -159,6 +154,7 @@ fun InstallTab(
                     roomDialogName = ""
                 }
             }
+            roomSettingsDialogName != null -> if (!roomActionLoading) roomSettingsDialogName = null
             pendingDeleteServer != null -> pendingDeleteServerId = null
             view != InstallView.GRID -> {
                 view = InstallView.GRID
@@ -171,10 +167,58 @@ fun InstallTab(
         }
     }
 
+    suspend fun <T> withAdminOperation(block: suspend () -> T): T {
+        check(onAdminSessionAccess()) { tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED) }
+        return block()
+    }
+
     LaunchedEffect(Unit) {
+        val loaded = runCatching { store.load() }.getOrElse {
+            installError = tr(TextId.COULD_NOT_OPEN_PROTECTED_DATA)
+            return@LaunchedEffect
+        }
+        // Remove legacy passwords from disk before performing network migration.
+        store.save(loaded)
+        var migrationFailures = 0
+        val needsMigration = loaded.any {
+            !it.sshKeyInstalled && it.password.isNotBlank() && !it.sshHostKeyPin.isNullOrBlank()
+        }
+        val prepared = if (needsMigration) {
+            runCatching {
+                withAdminOperation {
+                    loaded.map { server ->
+                        val keyInstalled = if (
+                            !server.sshKeyInstalled &&
+                            server.password.isNotBlank() &&
+                            !server.sshHostKeyPin.isNullOrBlank()
+                        ) {
+                            runCatching {
+                                onEnrollSshKey(
+                                    server.ip,
+                                    server.username,
+                                    server.password,
+                                    server.sshHostKeyPin
+                                )
+                            }.isSuccess.also { if (!it) migrationFailures++ }
+                        } else {
+                            server.sshKeyInstalled
+                        }
+                        server.copy(password = "", sshKeyInstalled = keyInstalled)
+                    }
+                }
+            }.getOrElse {
+                installError = it.message ?: tr(TextId.COULD_NOT_CONFIRM_ACCESS)
+                loaded.map { it.copy(password = "") }
+            }
+        } else {
+            loaded.map { it.copy(password = "") }
+        }
+        store.save(prepared)
         servers.clear()
         servers.addAll(store.load())
-        serversLoaded = true
+        if (migrationFailures > 0) {
+            installError = tr(TextId.THE_OLD_PASSWORD_COULD_NOT_BE_REPLACED_WITH_AN_SSH_KEY_FOR_SOME_SERVERS_)
+        }
     }
 
     LaunchedEffect(installLogs.size) {
@@ -193,31 +237,36 @@ fun InstallTab(
 
     fun persistServers() {
         store.save(servers)
+        val redacted = store.load()
+        servers.clear()
+        servers.addAll(redacted)
     }
 
     fun copyToClipboard(label: String, value: String) {
-        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(context, tr("Скопировано"), Toast.LENGTH_SHORT).show()
+        copySensitiveText(context, label, value)
+        Toast.makeText(context, tr(TextId.COPIED), Toast.LENGTH_SHORT).show()
     }
 
     fun updateServer(updated: InstallServer) {
         val index = servers.indexOfFirst { it.id == updated.id }
         if (index >= 0) {
-            servers[index] = updated
-            persistServers()
+            val redacted = store.upsert(updated)
+            servers.clear()
+            servers.addAll(redacted)
         }
     }
 
     fun updateServer(serverId: String, transform: (InstallServer) -> InstallServer) {
         val index = servers.indexOfFirst { it.id == serverId }
         if (index >= 0) {
-            servers[index] = transform(servers[index])
-            persistServers()
+            val redacted = store.upsert(transform(servers[index]))
+            servers.clear()
+            servers.addAll(redacted)
         }
     }
 
     fun relayVersionStateFor(actualVersion: String): RelayVersionState {
-        return if (actualVersion.trim() == expectedRelayVersion.trim()) {
+        return if (canonicalVersion(actualVersion) == canonicalVersion(expectedRelayVersion)) {
             RelayVersionState.CURRENT
         } else {
             RelayVersionState.OUTDATED
@@ -228,7 +277,7 @@ fun InstallTab(
         updateServer(serverId) { current ->
             result.fold(
                 onSuccess = { info ->
-                    val actualVersion = info.version.trim()
+                    val actualVersion = canonicalVersion(info.version)
                     current.copy(
                         installed = true,
                         relayVersion = actualVersion,
@@ -253,14 +302,14 @@ fun InstallTab(
         }
 
         val hasHttpsCredentials =
-            !server.relayTlsPin.isNullOrBlank() && !server.adminToken.isNullOrBlank()
+            !server.relayTlsPin.isNullOrBlank() && server.adminTokenAvailable
         val directVersionResult = if (hasHttpsCredentials) {
             runCatching {
                 onFetchRelayVersion(
                     server.ip,
                     server.httpsPort,
                     server.relayTlsPin,
-                    server.adminToken
+                    store.readAdminToken(server.id)
                 )
             }
         } else {
@@ -270,7 +319,7 @@ fun InstallTab(
         if (directVersionResult.isSuccess) {
             markRelayVersion(server.id, directVersionResult)
             runCatching {
-                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken)
+                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, store.readAdminToken(server.id))
             }.onSuccess { result ->
                 updateServer(server.id) { current ->
                     current.copy(
@@ -283,7 +332,7 @@ fun InstallTab(
                 }
                 if (reportErrors) installError = null
             }.onFailure {
-                if (reportErrors) installError = it.message ?: "Не удалось обновить открытые комнаты"
+                if (reportErrors) installError = it.message ?: tr(TextId.COULD_NOT_REFRESH_OPEN_ROOMS)
             }
             return
         }
@@ -302,7 +351,7 @@ fun InstallTab(
                 )
             }
             if (reportErrors) {
-                installError = it.message ?: "Не удалось проверить сервер по SSH"
+                installError = it.message ?: tr(TextId.COULD_NOT_CHECK_THE_SERVER_OVER_SSH)
             }
             return
         }
@@ -353,15 +402,16 @@ fun InstallTab(
                 httpsPort = relayInfo?.httpsPort ?: current.httpsPort,
                 adminToken = relayInfo?.adminToken ?: current.adminToken,
                 deploymentProfile = probed.deploymentProfile ?: current.deploymentProfile,
+                relayCapacity = probed.deploymentProfile?.relayCapacity ?: current.relayCapacity,
                 relayVersionState = RelayVersionState.UNKNOWN
             )
         }
 
         val discoveredPin = relayInfo?.pin ?: server.relayTlsPin
         val discoveredPort = relayInfo?.httpsPort ?: server.httpsPort
-        val discoveredToken = relayInfo?.adminToken ?: server.adminToken
+        val discoveredToken = relayInfo?.adminToken ?: store.readAdminToken(server.id)
         if (discoveredPin.isNullOrBlank() || discoveredToken.isNullOrBlank()) {
-            if (reportErrors) installError = "SymposiumRelay найден, но его параметры не удалось синхронизировать"
+            if (reportErrors) installError = tr(TextId.SYMPOSIUMRELAY_WAS_FOUND_BUT_ITS_SETTINGS_COULD_NOT_BE_SYNCHRONIZED)
             return
         }
 
@@ -388,34 +438,19 @@ fun InstallTab(
     }
 
     fun refreshRelayVersion(server: InstallServer) {
-        installScope.launch { syncServerState(server) }
-    }
-
-    LaunchedEffect(serversLoaded, refreshNonce) {
-        if (!serversLoaded) return@LaunchedEffect
-
-        servers.toList().forEach { server ->
-            refreshRelayVersion(server)
-        }
-    }
-
-    LaunchedEffect(serversLoaded) {
-        if (!serversLoaded) return@LaunchedEffect
-        while (true) {
-            delay(20_000)
-            val unsynchronized = servers.toList().filter {
-                !it.installed ||
-                    it.relayTlsPin.isNullOrBlank() ||
-                    it.adminToken.isNullOrBlank() ||
-                    it.relayVersionState == RelayVersionState.UNKNOWN
-            }
-            unsynchronized.forEach { server ->
-                syncServerState(server)
-            }
+        installScope.launch {
+            runCatching { withAdminOperation { syncServerState(server) } }
+                .onFailure { installError = it.message ?: tr(TextId.COULD_NOT_REFRESH_THE_SERVER_STATUS) }
         }
     }
 
     fun deleteServer(server: InstallServer) {
+        onDeleteSshKey(server.ip, server.username)
+        conferenceE2eeSecrets.removeAll(
+            host = server.ip,
+            port = server.httpsPort,
+            rooms = server.openRooms
+        )
         servers.removeAll { it.id == server.id }
         persistServers()
         selectedServerId = null
@@ -437,7 +472,8 @@ fun InstallTab(
         roomActionLoading = false
 
         val server = selectedServer ?: return@LaunchedEffect
-        syncServerState(server, reportErrors = true)
+        runCatching { withAdminOperation { syncServerState(server, reportErrors = true) } }
+            .onFailure { installError = it.message ?: tr(TextId.COULD_NOT_REFRESH_THE_SERVER_STATUS) }
     }
 
     fun finishAddServerAfterHostKeyTrust(trust: PendingSshHostKeyTrust) {
@@ -445,17 +481,30 @@ fun InstallTab(
         addError = null
 
         installScope.launch {
+            if (!onAdminSessionAccess()) {
+                addError = tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED)
+                addLoading = false
+                return@launch
+            }
+            runCatching {
+                onEnrollSshKey(trust.ip, trust.username, trust.password, trust.observedPin)
+            }.getOrElse {
+                addError = it.message ?: tr(TextId.COULD_NOT_CONFIGURE_SSH_KEY_ACCESS)
+                addLoading = false
+                return@launch
+            }
+
             val probe = runCatching {
                 onProbeServer(
                     trust.ip,
                     trust.username,
-                    trust.password,
+                    "",
                     trust.observedPin
                 )
             }
 
             val probed = probe.getOrElse {
-                addError = it.message ?: "Ошибка SSH-аутентификации: неверный логин или пароль."
+                addError = it.message ?: tr(TextId.COULD_NOT_CONNECT_TO_THE_SERVER)
                 addLoading = false
                 return@launch
             }
@@ -465,24 +514,27 @@ fun InstallTab(
                 name = trust.ip,
                 ip = trust.ip,
                 username = trust.username,
-                password = trust.password,
+                password = "",
+                sshKeyInstalled = true,
                 installed = probed.installed,
                 sshHostKeyPin = trust.observedPin,
                 httpsPort = probed.relayInfo?.httpsPort,
                 relayTlsPin = probed.relayInfo?.pin,
                 adminToken = probed.relayInfo?.adminToken,
                 deploymentProfile = probed.deploymentProfile,
+                relayCapacity = probed.deploymentProfile?.relayCapacity
+                    ?: RelayCapacityConfig.forPreset(RelayCapacityPreset.STANDARD),
                 openRooms = probed.openRooms,
                 relayVersionState = if (probed.installed) RelayVersionState.UNKNOWN else RelayVersionState.NOT_INSTALLED
             )
 
             servers.add(newServer)
             persistServers()
-            refreshRelayVersion(newServer)
+            syncServerState(newServer)
 
             selectedServerId = null
             view = InstallView.GRID
-            addSuccessMessage = "Сервер успешно добавлен"
+            addSuccessMessage = tr(TextId.SERVER_ADDED_SUCCESSFULLY)
 
             addIp = ""
             addUser = ""
@@ -498,12 +550,12 @@ fun InstallTab(
         val user = addUser.trim()
 
         if (ip.isBlank() || user.isBlank() || addPassword.isBlank()) {
-            addError = "Заполните IP, пользователя и пароль"
+            addError = tr(TextId.ENTER_THE_IP_ADDRESS_USER_AND_PASSWORD)
             return
         }
 
         if (!isValidIpAddress(ip)) {
-            addError = "Укажите корректный IP адрес"
+            addError = tr(TextId.ENTER_A_VALID_IP_ADDRESS)
             return
         }
 
@@ -515,7 +567,7 @@ fun InstallTab(
             val observedPin = runCatching {
                 onObserveSshHostKeyPin(ip)
             }.getOrElse {
-                addError = it.message ?: "Не удалось получить SSH-ключ сервера"
+                addError = it.message ?: tr(TextId.COULD_NOT_RETRIEVE_THE_SERVER_SSH_KEY)
                 addLoading = false
                 return@launch
             }
@@ -532,8 +584,8 @@ fun InstallTab(
 
     fun startInstallation(server: InstallServer) {
         if (installing) return
-        if (server.ip.isBlank() || server.username.isBlank() || server.password.isBlank()) {
-            installError = "Введите IP, логин и пароль"
+        if (server.ip.isBlank() || server.username.isBlank() || !server.sshKeyInstalled) {
+            installError = tr(TextId.A_CONFIGURED_SSH_KEY_IS_REQUIRED_FOR_INSTALLATION)
             installSuccess = false
             return
         }
@@ -551,14 +603,15 @@ fun InstallTab(
                     server.username.trim(),
                     server.password,
                     server.sshHostKeyPin,
-                    server.deploymentProfile
+                    store.hydrateDeploymentProfile(server),
+                    server.relayCapacity
                 ) { line ->
                     withContext(Dispatchers.Main) { installLogs.add(line) }
                 }
             }
 
             val r = result.getOrElse {
-                installError = it.message ?: "Не удалось выполнить установку"
+                installError = it.message ?: tr(TextId.INSTALLATION_COULD_NOT_BE_COMPLETED)
                 installing = false
                 installSuccess = false
                 installLogsExpanded = installLogs.isNotEmpty()
@@ -570,7 +623,7 @@ fun InstallTab(
             installSuccess = r.success
 
             if (!r.success) {
-                installError = installError ?: "Установка завершилась с ошибкой (код ${r.exitStatus})"
+                installError = installError ?: tr(TextId.INSTALLATION_FAILED_CODE, r.exitStatus)
                 return@launch
             }
 
@@ -587,6 +640,7 @@ fun InstallTab(
                     httpsPort = httpsPort ?: current.httpsPort,
                     adminToken = adminToken ?: current.adminToken,
                     deploymentProfile = r.deploymentProfile ?: current.deploymentProfile,
+                    relayCapacity = r.deploymentProfile?.relayCapacity ?: current.relayCapacity,
                     openRooms = r.openRooms,
                     relayVersion = expectedRelayVersion,
                     relayVersionState = RelayVersionState.CURRENT
@@ -610,14 +664,14 @@ fun InstallTab(
                     server.username.trim(),
                     server.password,
                     server.sshHostKeyPin,
-                    server.deploymentProfile
+                    store.hydrateDeploymentProfile(server)
                 ) { line ->
                     withContext(Dispatchers.Main) { installLogs.add(line) }
                 }
             }
 
             val r = result.getOrElse {
-                installError = it.message ?: "Не удалось удалить SymposiumRelay"
+                installError = it.message ?: tr(TextId.COULD_NOT_REMOVE_SYMPOSIUMRELAY)
                 removingRelay = false
                 installLogsExpanded = installLogs.isNotEmpty()
                 return@launch
@@ -644,8 +698,8 @@ fun InstallTab(
 
     fun updateRelay(server: InstallServer) {
         if (installing || removingRelay || updatingRelay) return
-        if (server.ip.isBlank() || server.username.isBlank() || server.password.isBlank()) {
-            installError = "Введите IP, логин и пароль"
+        if (server.ip.isBlank() || server.username.isBlank() || !server.sshKeyInstalled) {
+            installError = tr(TextId.A_CONFIGURED_SSH_KEY_IS_REQUIRED_FOR_UPDATING)
             installSuccess = false
             return
         }
@@ -657,20 +711,25 @@ fun InstallTab(
             installLogs.clear()
             installLogsExpanded = true
 
+            if (!onAdminSessionAccess()) {
+                installError = tr(TextId.ACCESS_TO_PROTECTED_DATA_WAS_NOT_CONFIRMED)
+                updatingRelay = false
+                return@launch
+            }
             val removalResult = runCatching {
                 onRemoveRelay(
                     server.ip.trim(),
                     server.username.trim(),
                     server.password,
                     server.sshHostKeyPin,
-                    server.deploymentProfile
+                    store.hydrateDeploymentProfile(server)
                 ) { line ->
                     withContext(Dispatchers.Main) { installLogs.add(line) }
                 }
             }
 
             val removal = removalResult.getOrElse {
-                installError = it.message ?: "Не удалось удалить старую версию SymposiumRelay"
+                installError = it.message ?: tr(TextId.COULD_NOT_REMOVE_THE_OLD_SYMPOSIUMRELAY_VERSION)
                 updatingRelay = false
                 installLogsExpanded = installLogs.isNotEmpty()
                 return@launch
@@ -684,14 +743,15 @@ fun InstallTab(
                     server.username.trim(),
                     server.password,
                     sshPin,
-                    server.deploymentProfile
+                    store.hydrateDeploymentProfile(server),
+                    server.relayCapacity
                 ) { line ->
                     withContext(Dispatchers.Main) { installLogs.add(line) }
                 }
             }
 
             val installed = installResult.getOrElse {
-                installError = it.message ?: "Не удалось установить новую версию SymposiumRelay"
+                installError = it.message ?: tr(TextId.COULD_NOT_INSTALL_THE_NEW_SYMPOSIUMRELAY_VERSION)
                 updatingRelay = false
                 installLogsExpanded = installLogs.isNotEmpty()
                 return@launch
@@ -702,7 +762,7 @@ fun InstallTab(
             installSuccess = installed.success
 
             if (!installed.success) {
-                installError = "Обновление завершилось с ошибкой (код ${installed.exitStatus})"
+                installError = tr(TextId.UPDATE_FAILED_CODE, installed.exitStatus)
                 return@launch
             }
 
@@ -714,6 +774,7 @@ fun InstallTab(
                     httpsPort = installed.relayInfo?.httpsPort ?: current.httpsPort,
                     adminToken = installed.relayInfo?.adminToken ?: current.adminToken,
                     deploymentProfile = installed.deploymentProfile ?: current.deploymentProfile,
+                    relayCapacity = installed.deploymentProfile?.relayCapacity ?: current.relayCapacity,
                     openRooms = installed.openRooms,
                     relayVersion = expectedRelayVersion,
                     relayVersionState = RelayVersionState.CURRENT
@@ -727,16 +788,17 @@ fun InstallTab(
         if (!server.installed) return
         val name = roomActionName.trim()
         if (name.isBlank()) {
-            installError = "Введите имя комнаты"
+            installError = tr(TextId.ENTER_A_ROOM_NAME_2)
             return
         }
+        val existingRoom = server.openRooms.firstOrNull { it.name == name }
         roomActionLoading = true
         installScope.launch {
             val result = runCatching {
-                onSetRoomOpenState(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken, name, open)
+                onSetRoomOpenState(server.ip, server.httpsPort, server.relayTlsPin, store.readAdminToken(server.id), name, open)
             }
             val r = result.getOrElse {
-                installError = it.message ?: "Ошибка управления комнатой"
+                installError = it.message ?: tr(TextId.ROOM_MANAGEMENT_ERROR)
                 roomActionLoading = false
                 return@launch
             }
@@ -750,14 +812,146 @@ fun InstallTab(
                 )
             }
             if (open) {
-                conferenceE2eeSecrets.rotate(server.ip, server.httpsPort, name)
+                r.openRooms.firstOrNull { it.name == name }?.let { openedRoom ->
+                    conferenceE2eeSecrets.rotate(
+                        server.ip,
+                        server.httpsPort,
+                        openedRoom.name,
+                        openedRoom.roomInstance
+                    )
+                }
             } else {
-                conferenceE2eeSecrets.remove(server.ip, server.httpsPort, name)
+                existingRoom?.let { closedRoom ->
+                    conferenceE2eeSecrets.remove(
+                        server.ip,
+                        server.httpsPort,
+                        closedRoom.name,
+                        closedRoom.roomInstance
+                    )
+                }
             }
             installError = null
             roomActionName = ""
             roomActionLoading = false
             onSuccess?.invoke()
+        }
+    }
+
+    fun createRoom(server: InstallServer) {
+        if (roomActionLoading || !server.installed) return
+        if (!serverAllowsRoomCreation(server)) {
+            installError = if (serverNeedsRelayUpdate(server)) {
+                tr(TextId.UPDATE_SELECTED_RELAY_FIRST)
+            } else {
+                tr(TextId.RELAY_VERSION_COULD_NOT_BE_VERIFIED)
+            }
+            return
+        }
+        val name = roomDialogName.trim()
+        if (name.isBlank()) {
+            installError = tr(TextId.ENTER_A_ROOM_NAME_2)
+            return
+        }
+        roomActionLoading = true
+        roomActionName = name
+        installScope.launch {
+            val result = runCatching {
+                onCreateRoom(
+                    server.ip,
+                    server.httpsPort,
+                    server.relayTlsPin,
+                    store.readAdminToken(server.id),
+                    name,
+                    false,
+                    false
+                )
+            }
+            val created = result.getOrElse {
+                installError = it.message ?: tr(TextId.COULD_NOT_CREATE_THE_ROOM)
+                roomActionLoading = false
+                return@launch
+            }
+            updateServer(server.id) { current ->
+                current.copy(
+                    openRooms = created.openRooms,
+                    relayTlsPin = created.relayInfo?.pin ?: current.relayTlsPin,
+                    httpsPort = created.relayInfo?.httpsPort ?: current.httpsPort,
+                    adminToken = created.relayInfo?.adminToken ?: current.adminToken
+                )
+            }
+            created.openRooms.firstOrNull { it.name == name }?.let { createdRoom ->
+                conferenceE2eeSecrets.rotate(
+                    server.ip,
+                    server.httpsPort,
+                    createdRoom.name,
+                    createdRoom.roomInstance
+                )
+            }
+            installError = null
+            roomActionName = ""
+            roomDialogName = ""
+            showAddRoomDialog = false
+            roomActionLoading = false
+        }
+    }
+
+    fun rotateRoomE2eeKey(server: InstallServer, roomName: String) {
+        val room = server.openRooms.firstOrNull { it.name == roomName }
+        if (room == null || !isValidRoomInstance(room.roomInstance)) {
+            pendingE2eeKeyRotationRoom = null
+            installError = tr(TextId.REFRESH_ROOM_LIST)
+            return
+        }
+        runCatching {
+            conferenceE2eeSecrets.rotate(
+                server.ip,
+                server.httpsPort,
+                room.name,
+                room.roomInstance
+            )
+        }.onSuccess {
+            pendingE2eeKeyRotationRoom = null
+            Toast.makeText(context, tr(TextId.E2EE_KEY_REFRESHED), Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            pendingE2eeKeyRotationRoom = null
+            installError = it.message
+        }
+    }
+
+    fun saveRoomSettings(server: InstallServer, roomName: String) {
+        if (roomActionLoading || !server.installed) return
+        roomActionLoading = true
+        roomActionName = roomName
+        installScope.launch {
+            val result = runCatching {
+                onSetRoomSettings(
+                    server.ip,
+                    server.httpsPort,
+                    server.relayTlsPin,
+                    store.readAdminToken(server.id),
+                    roomName,
+                    roomSettingsMuteAllByDefault,
+                    roomSettingsAdmitWithoutApproval
+                )
+            }
+            val updated = result.getOrElse {
+                installError = it.message ?: tr(TextId.COULD_NOT_SAVE_THE_ROOM_SETTINGS)
+                roomActionLoading = false
+                return@launch
+            }
+            updateServer(server.id) { current ->
+                current.copy(
+                    openRooms = updated.openRooms,
+                    relayTlsPin = updated.relayInfo?.pin ?: current.relayTlsPin,
+                    httpsPort = updated.relayInfo?.httpsPort ?: current.httpsPort,
+                    adminToken = updated.relayInfo?.adminToken ?: current.adminToken
+                )
+            }
+            installError = null
+            roomActionName = ""
+            roomSettingsDialogName = null
+            roomActionLoading = false
+            Toast.makeText(context, tr(TextId.ROOM_SETTINGS_SAVED), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -771,12 +965,12 @@ fun InstallTab(
                     server.ip,
                     server.httpsPort,
                     server.relayTlsPin,
-                    server.adminToken,
+                    store.readAdminToken(server.id),
                     roomName
                 )
             }
             val rotated = result.getOrElse {
-                installError = it.message ?: "Не удалось обновить ссылку модератора"
+                installError = it.message ?: tr(TextId.COULD_NOT_REFRESH_THE_MODERATOR_LINK)
                 roomActionLoading = false
                 pendingModeratorLinkRotationRoom = null
                 return@launch
@@ -793,7 +987,7 @@ fun InstallTab(
             roomActionName = ""
             roomActionLoading = false
             pendingModeratorLinkRotationRoom = null
-            Toast.makeText(context, tr("Ссылка модератора обновлена"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, tr(TextId.MODERATOR_LINK_REFRESHED), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -801,10 +995,10 @@ fun InstallTab(
         if (!server.installed) return
         installScope.launch {
             val result = runCatching {
-                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, server.adminToken)
+                onFetchOpenRooms(server.ip, server.httpsPort, server.relayTlsPin, store.readAdminToken(server.id))
             }
             val r = result.getOrElse {
-                installError = it.message ?: "Не удалось обновить открытые комнаты"
+                installError = it.message ?: tr(TextId.COULD_NOT_REFRESH_OPEN_ROOMS)
                 return@launch
             }
             updateServer(server.id) { current ->
@@ -822,68 +1016,98 @@ fun InstallTab(
 
     fun guestLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        if (pin.isNullOrBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectHttpRedirectLink(server.ip, server.httpsPort, room.name, pin, e2eeSecret)
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
+            server.ip,
+            server.httpsPort,
+            room.name,
+            room.roomInstance,
+            pin,
+            e2eeSecret,
+            requiredVersion = requiredVersion
+        )
     }
 
     fun guestQrLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        if (pin.isNullOrBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectDeepLink(server.ip, server.httpsPort, room.name, pin, e2eeSecret)
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
+            server.ip,
+            server.httpsPort,
+            room.name,
+            room.roomInstance,
+            pin,
+            e2eeSecret,
+            requiredVersion = requiredVersion
+        )
     }
 
     fun moderatorLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        val modKey = room.moderatorKey.trim()
-        if (pin.isNullOrBlank() || modKey.isBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectDeepLink(
+        val modKey = store.readModeratorKey(server.id, room).orEmpty().trim()
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || modKey.isBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
             server.ip,
             server.httpsPort,
             room.name,
+            room.roomInstance,
             pin,
             e2eeSecret,
+            requiredVersion = requiredVersion,
             moderatorKey = modKey
         )
     }
 
     fun moderatorQrLink(server: InstallServer, room: OpenRoomInfo): String? {
         val pin = server.relayTlsPin?.trim()
-        val modKey = room.moderatorKey.trim()
-        if (pin.isNullOrBlank() || modKey.isBlank()) return null
-        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name)
-        return buildConnectDeepLink(
+        val modKey = store.readModeratorKey(server.id, room).orEmpty().trim()
+        val requiredVersion = verifiedRoomRequiredVersion(room)
+        if (pin.isNullOrBlank() || modKey.isBlank() || requiredVersion == null || !isValidRoomInstance(room.roomInstance)) return null
+        val e2eeSecret = conferenceE2eeSecrets.getOrCreate(server.ip, server.httpsPort, room.name, room.roomInstance)
+        return buildInvitationToken(
             server.ip,
             server.httpsPort,
             room.name,
+            room.roomInstance,
             pin,
             e2eeSecret,
+            requiredVersion = requiredVersion,
             moderatorKey = modKey
         )
     }
 
     fun missingPinError() {
-        installError = "Переустановите SymposiumRelay."
-        Toast.makeText(context, tr("TLS pin отсутствует"), Toast.LENGTH_SHORT).show()
+        installError = tr(TextId.REINSTALL_SYMPOSIUMRELAY)
+        Toast.makeText(context, tr(TextId.TLS_PIN_IS_MISSING), Toast.LENGTH_SHORT).show()
     }
 
     fun missingModKeyError() {
-        installError = "Пересоздайте комнату"
-        Toast.makeText(context, tr("Нет moderator_key"), Toast.LENGTH_SHORT).show()
+        installError = tr(TextId.RECREATE_THE_ROOM)
+        Toast.makeText(context, tr(TextId.MODERATOR_KEY_IS_MISSING), Toast.LENGTH_SHORT).show()
+    }
+
+    fun missingRoomVersionError() {
+        val message = tr(TextId.THE_SERVER_DID_NOT_CONFIRM_THE_ROOM_VERSION_REINSTALL_SYMPOSIUMRELAY)
+        installError = message
+        Toast.makeText(context, trExternal(message), Toast.LENGTH_LONG).show()
     }
 
     pendingSshHostKeyTrust?.let { trust ->
         AppDialog(
-            title = "Запомнить SSH-ключ",
+            title = tr(TextId.TRUST_SSH_KEY),
             onDismiss = {
                 pendingSshHostKeyTrust = null
                 addLoading = false
             },
             content = {
                 Text(
-                    text = "Первое подключение к серверу ${trust.ip}. Пароль ещё не отправлялся. Если IP указан верно, приложение запомнит fingerprint и предупредит при его изменении.",
+                    text = tr(TextId.FIRST_SERVER_CONNECTION, trust.ip),
                     color = appTextPrimaryColor(),
                     fontSize = 14.sp,
                     lineHeight = 19.sp
@@ -904,7 +1128,7 @@ fun InstallTab(
                     )
                 }
                 Text(
-                    text = "Если сервер был переустановлен или вы не уверены в сети, проверьте fingerprint через панель VPS/консоль сервера перед продолжением.",
+                    text = tr(TextId.IF_THE_SERVER_WAS_REINSTALLED_OR_YOU_DO_NOT_TRUST_THE_NETWORK_VERIFY_THE),
                     color = appTextSecondaryColor(),
                     fontSize = 13.sp,
                     lineHeight = 18.sp
@@ -912,13 +1136,13 @@ fun InstallTab(
             },
             actions = {
                 ActionButton(
-                    label = "Копировать",
+                    label = tr(TextId.COPY),
                     onClick = { copyToClipboard("ssh_host_key_pin", trust.observedPin) },
                     kind = ActionButtonKind.SECONDARY,
                     modifier = Modifier.weight(1f)
                 )
                 ActionButton(
-                    label = "Продолжить",
+                    label = tr(TextId.CONTINUE),
                     onClick = {
                         pendingSshHostKeyTrust?.let { confirmed ->
                             pendingSshHostKeyTrust = null
@@ -932,61 +1156,74 @@ fun InstallTab(
         )
     }
 
-    if (fieldEditorTitle != null) {
-        FieldEditDialog(
-            title = fieldEditorTitle ?: "",
-            value = fieldEditorValue,
-            onValueChange = { fieldEditorValue = it },
-            onDismiss = {
-                fieldEditorTitle = null
-                fieldEditorSaver = null
-                fieldEditorValue = ""
-            },
-            onSave = {
-                fieldEditorSaver?.invoke(fieldEditorValue)
-                fieldEditorTitle = null
-                fieldEditorSaver = null
-                fieldEditorValue = ""
-            }
-        )
-    }
-
-    if (showAddRoomDialog) {
-        FieldEditDialog(
-            title = "Добавить комнату",
-            value = roomDialogName,
-            placeholder = "Введите название",
+    if (showAddRoomDialog && selectedServer != null) {
+        HomeCreateRoomDialog(
+            server = selectedServer,
+            roomName = roomDialogName,
+            error = installError,
             loading = roomActionLoading,
-            saveLabel = "Добавить",
-            onValueChange = { roomDialogName = it },
+            onRoomNameChange = { roomDialogName = it },
             onDismiss = {
                 if (!roomActionLoading) {
                     showAddRoomDialog = false
                     roomDialogName = ""
                 }
             },
-            onSave = FieldEditDialogOnSave@{
-                val server = selectedServer ?: return@FieldEditDialogOnSave
-                roomActionName = roomDialogName
-                applyRoomAction(server, open = true) {
-                    showAddRoomDialog = false
-                    roomDialogName = ""
-                }
-            }
+            onCreate = { createRoom(selectedServer) }
         )
+    }
+
+    roomSettingsDialogName?.let { roomName ->
+        val room = selectedServer?.openRooms?.firstOrNull { it.name == roomName }
+        if (selectedServer != null && room != null) {
+            AppDialog(
+                title = tr(TextId.ROOM_SETTINGS),
+                onDismiss = { if (!roomActionLoading) roomSettingsDialogName = null },
+                dismissEnabled = !roomActionLoading,
+                content = {
+                    Text(room.name, color = appTextPrimaryColor(), fontWeight = FontWeight.SemiBold)
+                    RoomSettingSwitch(
+                        title = tr(TextId.MUTE_MICROPHONES_ON_ENTRY),
+                        subtitle = tr(TextId.NEW_PARTICIPANTS_JOIN_WITH_THEIR_MICROPHONE_MUTED),
+                        checked = roomSettingsMuteAllByDefault,
+                        enabled = !roomActionLoading,
+                        onCheckedChange = { roomSettingsMuteAllByDefault = it }
+                    )
+                    RoomSettingSwitch(
+                        title = tr(TextId.ADMIT_WITHOUT_APPROVAL),
+                        subtitle = tr(TextId.PARTICIPANTS_JOIN_IMMEDIATELY_WITHOUT_ENTERING_THE_WAITING_ROOM),
+                        checked = roomSettingsAdmitWithoutApproval,
+                        enabled = !roomActionLoading,
+                        onCheckedChange = { roomSettingsAdmitWithoutApproval = it }
+                    )
+                },
+                actions = {
+                    ActionButton(
+                        label = tr(TextId.SAVE),
+                        onClick = { saveRoomSettings(selectedServer, room.name) },
+                        enabled = !roomActionLoading && (
+                            roomSettingsMuteAllByDefault != room.muteAllByDefault ||
+                                roomSettingsAdmitWithoutApproval != room.admitWithoutApproval
+                            ),
+                        loading = roomActionLoading,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            )
+        }
     }
 
     if (pendingModeratorLinkRotationRoom != null && selectedServer != null) {
         val roomName = pendingModeratorLinkRotationRoom.orEmpty()
         AppDialog(
-            title = "Обновить ссылку модератора?",
+            title = tr(TextId.REFRESH_MODERATOR_LINK_2),
             onDismiss = {
                 if (!roomActionLoading) pendingModeratorLinkRotationRoom = null
             },
             dismissEnabled = !roomActionLoading,
             content = {
                 Text(
-                    text = "Старая ссылка комнаты \"$roomName\" перестанет работать. Активные модераторы будут отключены; гости останутся в комнате.",
+                    text = tr(TextId.ROTATE_ROOM_LINK_CONFIRMATION, roomName),
                     color = appTextPrimaryColor(),
                     fontSize = 14.sp,
                     lineHeight = 19.sp
@@ -994,7 +1231,7 @@ fun InstallTab(
             },
             actions = {
                 ActionButton(
-                    label = "Обновить ссылку",
+                    label = tr(TextId.REFRESH_LINK),
                     onClick = { rotateModeratorLink(selectedServer, roomName) },
                     kind = ActionButtonKind.DANGER,
                     enabled = !roomActionLoading,
@@ -1005,13 +1242,14 @@ fun InstallTab(
         )
     }
 
-    pendingDeleteServer?.let { serverToDelete ->
+    if (pendingE2eeKeyRotationRoom != null && selectedServer != null) {
+        val roomName = pendingE2eeKeyRotationRoom.orEmpty()
         AppDialog(
-            title = "Удалить сервер",
-            onDismiss = { pendingDeleteServerId = null },
+            title = tr(TextId.REFRESH_E2EE_KEY),
+            onDismiss = { pendingE2eeKeyRotationRoom = null },
             content = {
                 Text(
-                    text = "Удалить сервер ${serverDisplayAddress(serverToDelete)} из приложения? SymposiumRelay на сервере не удаляется.",
+                    text = tr(TextId.ROTATE_E2EE_KEY_CONFIRMATION, roomName),
                     color = appTextPrimaryColor(),
                     fontSize = 14.sp,
                     lineHeight = 19.sp
@@ -1019,7 +1257,30 @@ fun InstallTab(
             },
             actions = {
                 ActionButton(
-                    label = "Удалить",
+                    label = tr(TextId.REFRESH_E2EE_KEY),
+                    onClick = { rotateRoomE2eeKey(selectedServer, roomName) },
+                    kind = ActionButtonKind.DANGER,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        )
+    }
+
+    pendingDeleteServer?.let { serverToDelete ->
+        AppDialog(
+            title = tr(TextId.DELETE_SERVER),
+            onDismiss = { pendingDeleteServerId = null },
+            content = {
+                Text(
+                    text = tr(TextId.REMOVE_SERVER_CONFIRMATION, serverDisplayAddress(serverToDelete)),
+                    color = appTextPrimaryColor(),
+                    fontSize = 14.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            actions = {
+                ActionButton(
+                    label = tr(TextId.DELETE),
                     onClick = { deleteServer(serverToDelete) },
                     kind = ActionButtonKind.DANGER,
                     modifier = Modifier.weight(1f)
@@ -1032,7 +1293,7 @@ fun InstallTab(
         val link = qrDialogLink ?: ""
 
         QrCodeDialog(
-            link = link,
+            token = link,
             title = qrDialogTitle,
             onDismiss = { qrDialogLink = null },
             onCopy = { copyToClipboard("room_deep_link", link) }
@@ -1057,7 +1318,7 @@ fun InstallTab(
                             SuccessMessage(addSuccessMessage ?: "")
                         }
                             ActionButton(
-                                label = "Добавить сервер",
+                                label = tr(TextId.ADD_SERVER),
                                 onClick = { view = InstallView.ADD },
                                 modifier = Modifier.fillMaxWidth(),
                                 kind = ActionButtonKind.PRIMARY
@@ -1068,8 +1329,8 @@ fun InstallTab(
                 if (servers.isEmpty()) {
                     item {
                         SectionCard(
-                            title = "Пока пусто",
-                            subtitle = "Добавьте сервер, чтобы начать установку"
+                            title = tr(TextId.NOTHING_HERE_YET),
+                            subtitle = tr(TextId.ADD_A_SERVER_TO_START_INSTALLATION)
                         ) {}
                     }
                 } else {
@@ -1095,14 +1356,14 @@ fun InstallTab(
             ) {
                 item {
                     SectionCard(
-                        title = "Новый сервер"
+                        title = tr(TextId.NEW_SERVER)
                     ) {
                         OutlinedTextField(
                             value = addIp,
                             onValueChange = { addIp = it },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            label = { Text("IP адрес") },
+                            label = { Text(tr(TextId.IP_ADDRESS)) },
                             colors = textFieldColors()
                         )
 
@@ -1111,7 +1372,7 @@ fun InstallTab(
                             onValueChange = { addUser = it },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            label = { Text("Пользователь") },
+                            label = { Text(tr(TextId.USER)) },
                             colors = textFieldColors()
                         )
 
@@ -1121,8 +1382,15 @@ fun InstallTab(
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
-                            label = { Text("Пароль") },
+                            label = { Text(tr(TextId.PASSWORD)) },
                             colors = textFieldColors()
+                        )
+
+                        Text(
+                            text = sshPasswordStorageNotice(),
+                            color = appTextSecondaryColor(),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
                         )
 
                         if (addError != null) {
@@ -1134,7 +1402,7 @@ fun InstallTab(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             ActionButton(
-                                label = "Назад",
+                                label = tr(TextId.BACK),
                                 onClick = {
                                     view = InstallView.GRID
                                     addIp = ""
@@ -1146,7 +1414,7 @@ fun InstallTab(
                                 kind = ActionButtonKind.SECONDARY
                             )
                             ActionButton(
-                                label = "Добавить",
+                                label = tr(TextId.ADD),
                                 onClick = { addServer() },
                                 modifier = Modifier.weight(1f),
                                 enabled = !addLoading,
@@ -1170,7 +1438,7 @@ fun InstallTab(
                 ) {
                     item {
                         ActionButton(
-                            label = "Назад к серверам",
+                            label = tr(TextId.BACK_TO_SERVERS),
                             onClick = {
                                 view = InstallView.GRID
                                 selectedServerId = null
@@ -1192,14 +1460,23 @@ fun InstallTab(
                             backgroundColor = appSurfaceElevatedColor()
                         ) {
                             Text(
-                                text = "Открытых комнат: ${openRoomsLabel(server.openRooms.size)}",
+                                text = tr(TextId.OPEN_ROOMS_COUNT, openRoomsLabel(server.openRooms.size)),
                                 color = appTextSecondaryColor(),
                                 fontSize = 14.sp
                             )
 
                             if (!server.installed) {
+                                RelayAdvancedSettingsButton(
+                                    config = server.relayCapacity,
+                                    enabled = !installing && !removingRelay && !updatingRelay,
+                                    onSave = { capacity ->
+                                        updateServer(server.id) { current ->
+                                            current.copy(relayCapacity = capacity)
+                                        }
+                                    }
+                                )
                                 ActionButton(
-                                    label = "Установить SymposiumRelay",
+                                    label = tr(TextId.INSTALL_SYMPOSIUMRELAY),
                                     onClick = { startInstallation(server) },
                                     modifier = Modifier.fillMaxWidth(),
                                     enabled = !installing && !removingRelay && !updatingRelay,
@@ -1211,7 +1488,7 @@ fun InstallTab(
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     ActionButton(
-                                        label = "Удалить SymposiumRelay",
+                                        label = tr(TextId.REMOVE_SYMPOSIUMRELAY),
                                         onClick = { removeRelay(server) },
                                         modifier = Modifier.weight(1f),
                                         kind = ActionButtonKind.DANGER,
@@ -1221,7 +1498,7 @@ fun InstallTab(
 
                                     if (server.relayVersionState == RelayVersionState.OUTDATED) {
                                         ActionButton(
-                                            label = "Обновить",
+                                            label = tr(TextId.REFRESH),
                                             onClick = { updateRelay(server) },
                                             modifier = Modifier.weight(1f),
                                             enabled = !removingRelay && !installing && !updatingRelay,
@@ -1237,66 +1514,7 @@ fun InstallTab(
                             }
 
                             if (installSuccess) {
-                                SuccessMessage("Операция завершена успешно")
-                            }
-                        }
-                    }
-
-                    item {
-                        CollapsibleSectionCard(
-                            title = "Параметры сервера",
-                            expanded = serverParamsExpanded,
-                            onToggle = { serverParamsExpanded = !serverParamsExpanded }
-                        ) {
-                            EditableFieldRow(
-                                label = "IP адрес",
-                                value = server.ip,
-                                onEdit = {
-                                    fieldEditorTitle = "IP адрес"
-                                    fieldEditorValue = server.ip
-                                    fieldEditorSaver = { newValue ->
-                                        val value = normalizeIpInput(newValue)
-                                        if (isValidIpAddress(value)) {
-                                            updateServer(server.copy(ip = value))
-                                            installError = null
-                                        } else {
-                                            installError = "Укажите корректный IP адрес без протокола"
-                                        }
-                                    }
-                                }
-                            )
-
-                            EditableFieldRow(
-                                label = "Логин",
-                                value = server.username,
-                                onEdit = {
-                                    fieldEditorTitle = "Логин"
-                                    fieldEditorValue = server.username
-                                    fieldEditorSaver = { newValue ->
-                                        val value = newValue.trim()
-                                        if (value.isNotEmpty()) {
-                                            updateServer(server.copy(username = value))
-                                        }
-                                    }
-                                }
-                            )
-
-                            EditableFieldRow(
-                                label = "Пароль",
-                                value = "•".repeat(server.password.length.coerceAtLeast(1)),
-                                onEdit = {
-                                    fieldEditorTitle = "Пароль"
-                                    fieldEditorValue = server.password
-                                    fieldEditorSaver = { newValue ->
-                                        if (newValue.isNotEmpty()) {
-                                            updateServer(server.copy(password = newValue))
-                                        }
-                                    }
-                                }
-                            )
-
-                            if (server.adminToken.isNullOrBlank() && server.installed) {
-                                ErrorMessage("adminToken отсутствует. Добавьте сервер заново или переустановите SymposiumRelay.")
+                                SuccessMessage(tr(TextId.OPERATION_COMPLETED_SUCCESSFULLY))
                             }
                         }
                     }
@@ -1304,8 +1522,8 @@ fun InstallTab(
                     if (server.installed) {
                         item {
                             CollapsibleSectionCard(
-                                title = "Комнаты",
-                                subtitle = "Открытых комнат: ${openRoomsLabel(server.openRooms.size)}",
+                                title = tr(TextId.ROOMS),
+                                subtitle = tr(TextId.OPEN_ROOMS_COUNT, openRoomsLabel(server.openRooms.size)),
                                 expanded = roomsExpanded,
                                 onToggle = { roomsExpanded = !roomsExpanded }
                             ) {
@@ -1315,7 +1533,7 @@ fun InstallTab(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Открытые комнаты",
+                                        text = tr(TextId.OPEN_ROOMS),
                                         color = appTextPrimaryColor(),
                                         fontSize = 15.sp,
                                         lineHeight = 20.sp,
@@ -1330,7 +1548,7 @@ fun InstallTab(
                                             icon = Icons.Filled.Refresh,
                                             onClick = { refreshOpenRooms(server) },
                                             enabled = !roomActionLoading,
-                                            contentDescription = "Обновить список комнат"
+                                            contentDescription = tr(TextId.REFRESH_ROOM_LIST)
                                         )
                                         TopIconAction(
                                             icon = Icons.Filled.Add,
@@ -1338,10 +1556,23 @@ fun InstallTab(
                                                 roomDialogName = ""
                                                 showAddRoomDialog = true
                                             },
-                                            enabled = !roomActionLoading,
-                                            contentDescription = "Добавить комнату"
+                                            enabled = !roomActionLoading && serverAllowsRoomCreation(server),
+                                            contentDescription = tr(TextId.ADD_ROOM)
                                         )
                                     }
+                                }
+
+                                if (!serverAllowsRoomCreation(server)) {
+                                    Text(
+                                        text = if (serverNeedsRelayUpdate(server)) {
+                                            tr(TextId.UPDATE_RELAY_TO_ADD_ROOM)
+                                        } else {
+                                            tr(TextId.ROOM_AVAILABLE_AFTER_VERSION_CHECK)
+                                        },
+                                        color = AppWarning,
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp
+                                    )
                                 }
 
                                 if (server.openRooms.isEmpty()) {
@@ -1354,7 +1585,7 @@ fun InstallTab(
                                             .padding(12.dp)
                                     ) {
                                         Text(
-                                            text = "Открытых комнат нет.",
+                                            text = tr(TextId.THERE_ARE_NO_OPEN_ROOMS),
                                             color = appTextSecondaryColor(),
                                             fontSize = 13.sp
                                         )
@@ -1371,38 +1602,54 @@ fun InstallTab(
                                             },
                                             onCopyGuest = {
                                                 val link = guestLink(server, openRoom)
-                                                if (link == null) missingPinError() else copyToClipboard("guest_https_room_link", link)
+                                                when {
+                                                    server.relayTlsPin.isNullOrBlank() -> missingPinError()
+                                                    verifiedRoomRequiredVersion(openRoom) == null -> missingRoomVersionError()
+                                                    link != null -> copyToClipboard("guest_https_room_link", link)
+                                                }
                                             },
                                             onQrGuest = {
                                                 val link = guestQrLink(server, openRoom)
-                                                if (link == null) {
-                                                    missingPinError()
-                                                } else {
-                                                    qrDialogTitle = "QR гостя"
-                                                    qrDialogLink = link
+                                                when {
+                                                    server.relayTlsPin.isNullOrBlank() -> missingPinError()
+                                                    verifiedRoomRequiredVersion(openRoom) == null -> missingRoomVersionError()
+                                                    link != null -> {
+                                                        qrDialogTitle = tr(TextId.GUEST_QR_CODE)
+                                                        qrDialogLink = link
+                                                    }
                                                 }
                                             },
                                             onCopyModerator = {
                                                 val link = moderatorLink(server, openRoom)
                                                 when {
                                                     server.relayTlsPin.isNullOrBlank() -> missingPinError()
-                                                    openRoom.moderatorKey.isBlank() -> missingModKeyError()
-                                                    else -> copyToClipboard("moderator_https_room_link", link ?: "")
+                                                    !openRoom.moderatorKeyAvailable -> missingModKeyError()
+                                                    verifiedRoomRequiredVersion(openRoom) == null -> missingRoomVersionError()
+                                                    link != null -> copyToClipboard("moderator_https_room_link", link)
                                                 }
                                             },
                                             onQrModerator = {
                                                 val link = moderatorQrLink(server, openRoom)
                                                 when {
                                                     server.relayTlsPin.isNullOrBlank() -> missingPinError()
-                                                    openRoom.moderatorKey.isBlank() -> missingModKeyError()
-                                                    else -> {
-                                                        qrDialogTitle = "QR модератора"
+                                                    !openRoom.moderatorKeyAvailable -> missingModKeyError()
+                                                    verifiedRoomRequiredVersion(openRoom) == null -> missingRoomVersionError()
+                                                    link != null -> {
+                                                        qrDialogTitle = tr(TextId.MODERATOR_QR_CODE)
                                                         qrDialogLink = link
                                                     }
                                                 }
                                             },
                                             onRotateModerator = {
                                                 pendingModeratorLinkRotationRoom = openRoom.name
+                                            },
+                                            onRotateE2ee = {
+                                                pendingE2eeKeyRotationRoom = openRoom.name
+                                            },
+                                            onEditSettings = {
+                                                roomSettingsDialogName = openRoom.name
+                                                roomSettingsMuteAllByDefault = openRoom.muteAllByDefault
+                                                roomSettingsAdmitWithoutApproval = openRoom.admitWithoutApproval
                                             },
                                             onClose = {
                                                 roomActionName = openRoom.name
@@ -1419,10 +1666,10 @@ fun InstallTab(
                         item {
                             CollapsibleSectionCard(
                                 title = when {
-                                    installing -> "Установка SymposiumRelay"
-                                    removingRelay -> "Удаление SymposiumRelay"
-                                    updatingRelay -> "Обновление SymposiumRelay"
-                                    else -> "Логи последней операции"
+                                    installing -> tr(TextId.INSTALLING_SYMPOSIUMRELAY)
+                                    removingRelay -> tr(TextId.REMOVING_SYMPOSIUMRELAY)
+                                    updatingRelay -> tr(TextId.UPDATING_SYMPOSIUMRELAY)
+                                    else -> tr(TextId.LATEST_OPERATION_LOGS)
                                 },
                                 expanded = installLogsExpanded,
                                 onToggle = { installLogsExpanded = !installLogsExpanded }
@@ -1521,7 +1768,7 @@ internal fun ServerListCard(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Открытых комнат: ${openRoomsLabel(server.openRooms.size)}",
+                            text = tr(TextId.OPEN_ROOMS_COUNT, openRoomsLabel(server.openRooms.size)),
                             color = appTextSecondaryColor(),
                             fontSize = 13.sp,
                             maxLines = 1,
@@ -1534,7 +1781,7 @@ internal fun ServerListCard(
                     IconButton(onClick = onDelete) {
                         Icon(
                             imageVector = Icons.Filled.Delete,
-                            contentDescription = tr("Удалить сервер"),
+                            contentDescription = tr(TextId.DELETE_SERVER),
                             tint = AppError
                         )
                     }
@@ -1612,14 +1859,14 @@ internal fun RoomsSectionCard(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "Комнаты",
+                        text = tr(TextId.ROOMS),
                         color = appTextPrimaryColor(),
                         fontSize = 17.sp,
                         lineHeight = 22.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "Открытых комнат: ${openRoomsLabel(roomNames.size)}",
+                        text = tr(TextId.OPEN_ROOMS_COUNT, openRoomsLabel(roomNames.size)),
                         color = appTextSecondaryColor(),
                         fontSize = 12.sp,
                         lineHeight = 17.sp
@@ -1628,7 +1875,7 @@ internal fun RoomsSectionCard(
 
                 Icon(
                     imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                    contentDescription = tr(if (expanded) "Свернуть комнаты" else "Развернуть комнаты"),
+                    contentDescription = tr(if (expanded) TextId.COLLAPSE_ROOMS else TextId.EXPAND_ROOMS),
                     tint = appTextSecondaryColor(),
                     modifier = Modifier.size(24.dp)
                 )
@@ -1637,7 +1884,7 @@ internal fun RoomsSectionCard(
             AnimatedVisibility(visible = !expanded) {
                 Text(
                     text = when {
-                        roomNames.isEmpty() -> "Открытых комнат нет."
+                        roomNames.isEmpty() -> tr(TextId.THERE_ARE_NO_OPEN_ROOMS)
                         roomNames.size <= 2 -> roomNames.joinToString(" · ")
                         else -> roomNames.take(2).joinToString(" · ") + " · +${roomNames.size - 2}"
                     },
@@ -1656,7 +1903,7 @@ internal fun RoomsSectionCard(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         ActionButton(
-                            label = "Обновить",
+                            label = tr(TextId.REFRESH),
                             onClick = onRefresh,
                             modifier = Modifier.weight(1f),
                             kind = ActionButtonKind.SECONDARY,
@@ -1664,7 +1911,7 @@ internal fun RoomsSectionCard(
                             icon = Icons.Filled.Refresh
                         )
                         ActionButton(
-                            label = "Добавить комнату",
+                            label = tr(TextId.ADD_ROOM),
                             onClick = onAdd,
                             modifier = Modifier.weight(1f),
                             kind = ActionButtonKind.SECONDARY,
@@ -1691,6 +1938,8 @@ internal fun RoomItemCard(
     onCopyModerator: () -> Unit,
     onQrModerator: () -> Unit,
     onRotateModerator: () -> Unit,
+    onRotateE2ee: () -> Unit,
+    onEditSettings: () -> Unit,
     onClose: () -> Unit
 ) {
     Surface(
@@ -1739,15 +1988,15 @@ internal fun RoomItemCard(
                         fontSize = 15.sp
                     )
                     Text(
-                        text = if (room.moderatorKey.isBlank()) "Ссылка модератора недоступна" else "Ссылки готовы",
-                        color = if (room.moderatorKey.isBlank()) AppError else appTextSecondaryColor(),
+                        text = if (!room.moderatorKeyAvailable) tr(TextId.MODERATOR_LINK_UNAVAILABLE) else tr(TextId.LINKS_ARE_READY),
+                        color = if (!room.moderatorKeyAvailable) AppError else appTextSecondaryColor(),
                         fontSize = 12.sp
                     )
                 }
 
                 Icon(
                     imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                    contentDescription = tr(if (expanded) "Свернуть комнату" else "Развернуть комнату"),
+                    contentDescription = tr(if (expanded) TextId.COLLAPSE_ROOM else TextId.EXPAND_ROOM),
                     tint = appTextSecondaryColor(),
                     modifier = Modifier.size(22.dp)
                 )
@@ -1756,8 +2005,8 @@ internal fun RoomItemCard(
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     RoomLinkActionsRow(
-                        title = "Гость",
-                        subtitle = "Ссылка для подключения без прав модератора",
+                        title = tr(TextId.GUEST),
+                        subtitle = tr(TextId.CONNECTION_LINK_WITHOUT_MODERATOR_PERMISSIONS),
                         badgeColor = appTextSecondaryColor(),
                         onCopy = onCopyGuest,
                         onQr = onQrGuest,
@@ -1765,8 +2014,8 @@ internal fun RoomItemCard(
                     )
 
                     RoomLinkActionsRow(
-                        title = "Модератор",
-                        subtitle = "Ссылка с правами управления комнатой",
+                        title = tr(TextId.MODERATOR),
+                        subtitle = tr(TextId.LINK_WITH_ROOM_MANAGEMENT_PERMISSIONS),
                         badgeColor = AppAccent,
                         onCopy = onCopyModerator,
                         onQr = onQrModerator,
@@ -1774,15 +2023,30 @@ internal fun RoomItemCard(
                     )
 
                     ActionButton(
-                        label = "Обновить ссылку модератора",
+                        label = tr(TextId.REFRESH_MODERATOR_LINK),
                         onClick = onRotateModerator,
+                        modifier = Modifier.fillMaxWidth(),
+                        kind = ActionButtonKind.SECONDARY,
+                        enabled = !loading
+                    )
+                    ActionButton(
+                        label = tr(TextId.REFRESH_E2EE_KEY),
+                        onClick = onRotateE2ee,
                         modifier = Modifier.fillMaxWidth(),
                         kind = ActionButtonKind.SECONDARY,
                         enabled = !loading
                     )
 
                     ActionButton(
-                        label = "Закрыть комнату",
+                        label = tr(TextId.ROOM_SETTINGS),
+                        onClick = onEditSettings,
+                        modifier = Modifier.fillMaxWidth(),
+                        kind = ActionButtonKind.SECONDARY,
+                        enabled = !loading
+                    )
+
+                    ActionButton(
+                        label = tr(TextId.CLOSE_ROOM),
                         onClick = onClose,
                         modifier = Modifier.fillMaxWidth(),
                         kind = ActionButtonKind.SECONDARY,
@@ -1855,7 +2119,7 @@ internal fun RoomLinkActionsRow(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 ActionButton(
-                    label = "Копировать",
+                    label = tr(TextId.COPY),
                     onClick = onCopy,
                     modifier = Modifier.weight(1f),
                     kind = ActionButtonKind.SECONDARY,
@@ -1863,7 +2127,7 @@ internal fun RoomLinkActionsRow(
                     enabled = enabled
                 )
                 ActionButton(
-                    label = "QR-код",
+                    label = tr(TextId.QR_CODE),
                     onClick = onQr,
                     modifier = Modifier.weight(1f),
                     kind = ActionButtonKind.SECONDARY,
@@ -1918,13 +2182,13 @@ internal fun RoomLinkActionsRow(
 
         RoomLinkIconButton(
             icon = Icons.Filled.ContentCopy,
-            contentDescription = "Копировать",
+            contentDescription = tr(TextId.COPY),
             onClick = onCopy,
             enabled = enabled
         )
         RoomLinkIconButton(
             icon = Icons.Filled.QrCode2,
-            contentDescription = "QR-код",
+            contentDescription = tr(TextId.QR_CODE),
             onClick = onQr,
             enabled = enabled
         )
@@ -1949,79 +2213,9 @@ private fun RoomLinkIconButton(
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = tr(contentDescription),
+            contentDescription = contentDescription,
             tint = if (enabled) appTextPrimaryColor() else appTextMutedColor(),
             modifier = Modifier.size(18.dp)
         )
     }
-}
-
-@Composable
-internal fun EditableFieldRow(
-    label: String,
-    value: String,
-    onEdit: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(InnerCardShape)
-            .background(appSurfaceElevatedColor())
-            .border(1.dp, Color.Transparent, InnerCardShape)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(label, color = appTextSecondaryColor(), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = value.ifBlank { "—" },
-                color = appTextPrimaryColor(),
-                fontSize = 15.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        IconButton(onClick = onEdit) {
-            Icon(imageVector = Icons.Filled.Edit, contentDescription = tr("Редактировать"), tint = AppAccent)
-        }
-    }
-}
-
-@Composable
-internal fun FieldEditDialog(
-    title: String,
-    value: String,
-    placeholder: String = "",
-    loading: Boolean = false,
-    saveLabel: String = "Сохранить",
-    onValueChange: (String) -> Unit,
-    onDismiss: () -> Unit,
-    onSave: () -> Unit
-) {
-    AppDialog(
-        title = title,
-        onDismiss = onDismiss,
-        dismissEnabled = !loading,
-        content = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { if (placeholder.isNotBlank()) Text(placeholder) },
-                colors = textFieldColors()
-            )
-        },
-        actions = {
-            ActionButton(
-                label = saveLabel,
-                onClick = onSave,
-                enabled = !loading,
-                loading = loading,
-                modifier = Modifier.weight(1f)
-            )
-        }
-    )
 }

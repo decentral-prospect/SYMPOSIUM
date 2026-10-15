@@ -24,7 +24,7 @@ project(":app") {
         includeConfigs = listOf("releaseRuntimeClasspath")
 
         projectType = Component.Type.APPLICATION
-        componentName = "Symposium"
+        componentName = "SYMPOSIUM"
         componentVersion = symposiumVersion
 
         xmlOutput.unsetConvention()
@@ -33,7 +33,7 @@ project(":app") {
 
 tasks.named<CyclonedxAggregateTask>("cyclonedxBom") {
     projectType = Component.Type.APPLICATION
-    componentName = "Symposium"
+    componentName = "SYMPOSIUM"
     componentVersion = symposiumVersion
 
     xmlOutput.unsetConvention()

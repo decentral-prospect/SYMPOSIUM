@@ -11,29 +11,31 @@ internal fun MainActivity.privacyPrefs() = getSharedPreferences(PRIVACY_PREFS_NA
 internal fun MainActivity.loadTelemetryPrivacyPrefs() {
     val prefs = privacyPrefs()
     telemetryEnabledState = prefs.getBoolean(PREF_TELEMETRY_ENABLED, false)
-    telemetryPromptShownState = prefs.getBoolean(PREF_TELEMETRY_PROMPT_SHOWN, false)
 }
 
 internal fun MainActivity.persistTelemetryPrivacyPrefs() {
     privacyPrefs().edit()
         .putBoolean(PREF_TELEMETRY_ENABLED, telemetryEnabledState)
-        .putBoolean(PREF_TELEMETRY_PROMPT_SHOWN, telemetryPromptShownState)
         .apply()
 }
 
 internal fun MainActivity.setExternalTelemetryEnabled(enabled: Boolean, showToast: Boolean = false) {
-    val decisionChanged = !telemetryPromptShownState || enabled != telemetryEnabledState
-    telemetryPromptShownState = true
+    val decisionChanged = enabled != telemetryEnabledState
     telemetryEnabledState = enabled
     persistTelemetryPrivacyPrefs()
 
     if (decisionChanged) {
         TelemetryClient.get(applicationContext).recordConsentChange(enabled)
     }
+    if (enabled) startTelemetry()
 
     if (showToast) {
-        val message = if (enabled) "Анонимная диагностика включена" else "Анонимная диагностика выключена"
-        Toast.makeText(this, tr(message), Toast.LENGTH_SHORT).show()
+        val messageId = if (enabled) {
+            TextId.ANONYMOUS_DIAGNOSTICS_ENABLED
+        } else {
+            TextId.ANONYMOUS_DIAGNOSTICS_DISABLED
+        }
+        Toast.makeText(this, tr(messageId), Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -43,6 +45,7 @@ internal fun MainActivity.externalTelemetryActive(): Boolean {
 }
 
 internal fun MainActivity.startTelemetry() {
+    if (!externalTelemetryActive()) return
     val client = TelemetryClient.get(applicationContext)
     client.sendLifecycleSignals()
     client.recordAppLaunch()
@@ -340,6 +343,7 @@ internal suspend fun MainActivity.performRelayInstallationWithTelemetry(
     password: String,
     expectedSshHostKeyPin: String?,
     existingProfile: DeploymentProfile?,
+    relayCapacity: RelayCapacityConfig,
     logger: suspend (String) -> Unit
 ): RemoteInstaller.InstallResult {
     relayInstallStartedAtMs = SystemClock.elapsedRealtime()
@@ -359,6 +363,7 @@ internal suspend fun MainActivity.performRelayInstallationWithTelemetry(
             password = password,
             expectedSshHostKeyPin = expectedSshHostKeyPin,
             existingProfile = existingProfile,
+            relayCapacity = relayCapacity,
             logger = telemetryLogger
         )
 
@@ -411,12 +416,14 @@ internal fun MainActivity.relayInstallDurationMs(): Long {
 internal fun MainActivity.installerStageFromLog(line: String): String? {
     val s = line.lowercase(Locale.US)
     return when {
-        "подключение к серверу" in s || "ssh готов" in s -> "connect_ssh"
-        "очистка" in s -> "prepare_remote_dir"
-        "подготовка файлов" in s -> "prepare_files"
-        "скрипт" in s -> "upload_script"
-        "файл сервера" in s || "файла из приложения" in s -> "upload_binary"
-        "запуск" in s -> "run_installer"
+        "подключение к серверу" in s || "connecting to server" in s ||
+            "ssh готов" in s || "ssh ready" in s -> "connect_ssh"
+        "очистка" in s || "cleaning up" in s -> "prepare_remote_dir"
+        "подготовка файлов" in s || "preparing files" in s -> "prepare_files"
+        "скрипт" in s || "script" in s -> "upload_script"
+        "файл сервера" in s || "файла из приложения" in s ||
+            "server binary" in s || "fallback file bundled with the app" in s -> "upload_binary"
+        "запуск" in s || "starting a new installation" in s -> "run_installer"
         "1/8" in s -> "stage_1_check_server"
         "2/8" in s -> "stage_2_install_deps"
         "3/8" in s -> "stage_3_firewall"
@@ -426,7 +433,7 @@ internal fun MainActivity.installerStageFromLog(line: String): String? {
         "7/8" in s -> "stage_7_https_wss"
         "8/8" in s -> "stage_8_final_checks"
         "получение данных" in s -> "read_relay_info"
-        "готово" in s -> "finished"
+        "готово" in s || "done" in s -> "finished"
         "ошибка" in s -> "error"
         else -> null
     }

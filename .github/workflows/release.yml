@@ -62,13 +62,28 @@ jobs:
       - name: Test relay lock tooling
         run: scripts/test-relay-tools.sh
 
-      - name: Fetch locked relay
-        run: scripts/fetch-relay.sh
+      - name: Check out relay source pinned by relay.lock.json
+        run: python3 scripts/relay-source.py fetch .relay-work/source
+
+      - name: Set up Go from locked relay
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .relay-work/source/go.mod
+          cache: false
+
+      - name: Test relay source build safeguards
+        run: python3 scripts/test-relay-source.py
+
+      - name: Download locked Go module sources
+        run: python3 scripts/relay-source.py download-deps .relay-work/source
+
+      - name: Build bundled relay from verified source without network downloads
+        run: python3 scripts/relay-source.py build .relay-work/source
 
       - name: Verify locked relay provenance
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/verify-relay-provenance.sh
+        run: scripts/verify-relay-provenance.sh --download
 
       - name: Reconstruct release keystore
         id: signing
@@ -111,8 +126,8 @@ jobs:
           set -Eeuo pipefail
           release_dir="$RUNNER_TEMP/release"
           mkdir -p "$release_dir"
-          apk="$release_dir/Symposium-$RELEASE_VERSION.apk"
-          aab="$release_dir/Symposium-$RELEASE_VERSION.aab"
+          apk="$release_dir/SYMPOSIUM-$RELEASE_VERSION.apk"
+          aab="$release_dir/SYMPOSIUM-$RELEASE_VERSION.aab"
           install -m 0644 app/build/outputs/apk/release/app-release.apk "$apk"
           install -m 0644 app/build/outputs/bundle/release/app-release.aab "$aab"
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
@@ -131,7 +146,7 @@ jobs:
             --dependency-verification strict \
             cyclonedxBom
           source_sbom="build/reports/cyclonedx/bom.json"
-          target_sbom="$RUNNER_TEMP/release/Symposium-$RELEASE_VERSION.cdx.json"
+          target_sbom="$RUNNER_TEMP/release/SYMPOSIUM-$RELEASE_VERSION.cdx.json"
           [[ -s "$source_sbom" ]]
           install -m 0644 "$source_sbom" "$target_sbom"
           [[ -s "$target_sbom" ]]
@@ -143,12 +158,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd "$RUNNER_TEMP/release"
-          sbom="Symposium-$RELEASE_VERSION.cdx.json"
+          sbom="SYMPOSIUM-$RELEASE_VERSION.cdx.json"
           [[ -s "$sbom" ]]
           jq -e '
             .bomFormat == "CycloneDX"
             and (.specVersion | type == "string")
-            and .metadata.component.name == "Symposium"
+            and .metadata.component.name == "SYMPOSIUM"
             and .metadata.component.version == env.RELEASE_VERSION
             and ((.components // []) | length > 0)
             and ((.dependencies // []) | length > 0)
@@ -163,32 +178,32 @@ jobs:
             dependencyRelations: ((.dependencies // []) | length)
           }' "$sbom"
           sha256sum \
-            "Symposium-$RELEASE_VERSION.apk" \
-            "Symposium-$RELEASE_VERSION.aab" \
+            "SYMPOSIUM-$RELEASE_VERSION.apk" \
+            "SYMPOSIUM-$RELEASE_VERSION.aab" \
             "$sbom" > SHA256SUMS
           sha256sum --check SHA256SUMS
 
       - name: Attest APK provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.apk
+          subject-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.apk
 
       - name: Attest AAB provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.aab
+          subject-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.aab
 
       - name: Attest APK CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.apk
-          sbom-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.cdx.json
+          subject-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.apk
+          sbom-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.cdx.json
 
       - name: Attest AAB CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.aab
-          sbom-path: ${{ runner.temp }}/release/Symposium-${{ steps.release_meta.outputs.version }}.cdx.json
+          subject-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.aab
+          sbom-path: ${{ runner.temp }}/release/SYMPOSIUM-${{ steps.release_meta.outputs.version }}.cdx.json
 
       - name: Create draft, upload assets, and publish
         env:
@@ -202,19 +217,19 @@ jobs:
             echo "A GitHub Release already exists for $RELEASE_VERSION" >&2
             exit 1
           fi
-          release_args=(--verify-tag --draft --generate-notes --title "Symposium $RELEASE_VERSION")
+          release_args=(--verify-tag --draft --generate-notes --title "SYMPOSIUM $RELEASE_VERSION")
           if [[ "$IS_PRERELEASE" == "true" ]]; then
             release_args+=(--prerelease)
           fi
           gh release create "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" "${release_args[@]}"
           cd "$RUNNER_TEMP/release"
           gh release upload "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" \
-            "Symposium-$RELEASE_VERSION.apk" \
-            "Symposium-$RELEASE_VERSION.aab" \
-            "Symposium-$RELEASE_VERSION.cdx.json" \
+            "SYMPOSIUM-$RELEASE_VERSION.apk" \
+            "SYMPOSIUM-$RELEASE_VERSION.aab" \
+            "SYMPOSIUM-$RELEASE_VERSION.cdx.json" \
             SHA256SUMS
           uploaded="$(gh release view "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | map(.name) | sort | join("\n")')"
-          expected="$(printf '%s\n' SHA256SUMS "Symposium-$RELEASE_VERSION.aab" "Symposium-$RELEASE_VERSION.apk" "Symposium-$RELEASE_VERSION.cdx.json" | sort)"
+          expected="$(printf '%s\n' SHA256SUMS "SYMPOSIUM-$RELEASE_VERSION.aab" "SYMPOSIUM-$RELEASE_VERSION.apk" "SYMPOSIUM-$RELEASE_VERSION.cdx.json" | sort)"
           [[ "$uploaded" == "$expected" ]]
           gh release edit "$RELEASE_VERSION" -R "$GITHUB_REPOSITORY" --draft=false
 

@@ -47,6 +47,8 @@ gh api "repos/${relay_repository}/releases/tags/${version}" >"$release_json"
 [[ "$(jq -er '.immutable // false' "$release_json")" == "true" ]] ||
     relay_error "release is not immutable: $version"
 
+source_revision="$(resolve_relay_tag_revision "$relay_source_repository" "$version")"
+
 asset_count="$(jq --arg name "$relay_asset" '[.assets[] | select(.name == $name)] | length' "$release_json")"
 checksums_count="$(jq '[.assets[] | select(.name == "SHA256SUMS")] | length' "$release_json")"
 [[ "$asset_count" == "1" ]] || relay_error "release must contain exactly one $relay_asset asset"
@@ -77,9 +79,7 @@ expected_sha256="${checksum_matches[0]}"
     relay_error "SHA256SUMS does not match the immutable GitHub asset digest"
 
 verify_relay_sha256 "$work_dir/$relay_asset" "$expected_sha256"
-gh attestation verify "$work_dir/$relay_asset" -R "$relay_repository"
-gh attestation verify "$work_dir/$relay_asset" -R "$relay_repository" \
-    --predicate-type https://cyclonedx.org/bom
+verify_relay_attestations "$work_dir/$relay_asset" "$relay_source_repository" "$version" "$source_revision"
 
 lock_staging="$(mktemp "${lock_file}.tmp.XXXXXX")"
 jq -n \
@@ -88,7 +88,9 @@ jq -n \
     --arg asset "$relay_asset" \
     --arg url "$canonical_url" \
     --arg sha256 "$expected_sha256" \
-    '{repository: $repository, version: $version, asset: $asset, url: $url, sha256: $sha256}' \
+    --arg source_revision "$source_revision" \
+    --arg source_repository "$relay_source_repository" \
+    '{repository: $repository, version: $version, asset: $asset, url: $url, sha256: $sha256, source_revision: $source_revision, source_repository: $source_repository}' \
     >"$lock_staging"
 validate_relay_lock "$lock_staging"
 chmod 0644 "$lock_staging"

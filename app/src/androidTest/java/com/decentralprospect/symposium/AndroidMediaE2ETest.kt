@@ -31,6 +31,7 @@ class AndroidMediaE2ETest {
         val arguments = InstrumentationRegistry.getArguments()
         val relayAddress = arguments.getString(ARG_RELAY_ADDRESS).orEmpty().trim()
         val room = arguments.getString(ARG_ROOM).orEmpty().trim()
+        val roomInstance = arguments.getString(ARG_ROOM_INSTANCE).orEmpty().trim()
         val moderatorKey = arguments.getString(ARG_MODERATOR_KEY).orEmpty().trim()
         val tlsPin = arguments.getString(ARG_TLS_PIN).orEmpty().trim()
         val e2eeSecret = arguments.getString(ARG_E2EE_SECRET).orEmpty().trim()
@@ -40,7 +41,7 @@ class AndroidMediaE2ETest {
 
         assumeTrue(
             "Run through scripts/android-media-e2e.sh to provide the relay configuration",
-            relayAddress.isNotBlank() && room.isNotBlank() &&
+            relayAddress.isNotBlank() && room.isNotBlank() && roomInstance.isNotBlank() &&
                 moderatorKey.isNotBlank() && tlsPin.isNotBlank() && e2eeSecret.isNotBlank()
         )
 
@@ -58,6 +59,7 @@ class AndroidMediaE2ETest {
                 activity.connectViaCallService(
                     url = relayAddress,
                     room = room,
+                    roomInstance = roomInstance,
                     username = "android-e2e",
                     tlsPin = tlsPin,
                     modKey = moderatorKey,
@@ -244,6 +246,7 @@ class AndroidMediaE2ETest {
     private companion object {
         const val ARG_RELAY_ADDRESS = "e2eRelayAddress"
         const val ARG_ROOM = "e2eRoom"
+        const val ARG_ROOM_INSTANCE = "e2eRoomInstance"
         const val ARG_MODERATOR_KEY = "e2eModeratorKey"
         const val ARG_TLS_PIN = "e2eTlsPin"
         const val ARG_E2EE_SECRET = "e2eSecret"

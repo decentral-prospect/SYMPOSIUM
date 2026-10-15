@@ -52,10 +52,8 @@ internal fun availableVersionFromResponse(
 
     if (!VERSION_VALUE_PATTERN.matches(remoteVersion)) return null
 
-    return remoteVersion.takeUnless {
-        normalizeVersionForComparison(it) == normalizeVersionForComparison(currentVersion)
+    val canonicalRemoteVersion = canonicalVersion(remoteVersion)
+    return canonicalRemoteVersion.takeUnless {
+        it == canonicalVersion(currentVersion)
     }
 }
-
-private fun normalizeVersionForComparison(version: String): String =
-    version.trim().removePrefix("v").removePrefix("V")

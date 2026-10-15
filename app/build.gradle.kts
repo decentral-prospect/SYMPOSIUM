@@ -46,6 +46,8 @@ val relayReleaseVersion = requiredString(relayLock, "version", "relay.lock.json"
 val relayAsset = requiredString(relayLock, "asset", "relay.lock.json")
 val relayBinaryUrl = requiredString(relayLock, "url", "relay.lock.json")
 val relayBinarySha256 = requiredString(relayLock, "sha256", "relay.lock.json")
+val relaySourceRevision = requiredString(relayLock, "source_revision", "relay.lock.json")
+val relaySourceRepository = requiredString(relayLock, "source_repository", "relay.lock.json")
 val relayVersionPattern = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
 val relaySha256Pattern = Regex("^[0-9a-f]{64}$")
 
@@ -61,11 +63,28 @@ if (!relayReleaseVersion.matches(relayVersionPattern)) {
 if (!relayBinarySha256.matches(relaySha256Pattern)) {
     throw GradleException("relay.lock.json contains an invalid SHA-256")
 }
+if (!relaySourceRevision.matches(Regex("^[0-9a-f]{40}$"))) {
+    throw GradleException("relay.lock.json contains an invalid source revision")
+}
+if (relaySourceRepository != "decentral-prospect/symposium-relay") {
+    throw GradleException("relay.lock.json contains an unexpected source repository")
+}
 val canonicalRelayUrl =
     "https://github.com/$relayRepository/releases/download/$relayReleaseVersion/$relayAsset"
 if (relayBinaryUrl != canonicalRelayUrl) {
     throw GradleException("relay.lock.json URL must be the canonical locked release URL")
 }
+
+// The source build receipt is generated before Gradle starts. The release SHA
+// remains authoritative for the separate GitHub download used by the installer.
+val relayBuildReceiptFile = rootProject.file("build/relay/bundled-relay.json")
+val relayBundledSha256 = if (relayBuildReceiptFile.isFile) {
+    val receipt = JsonSlurper().parse(relayBuildReceiptFile) as? Map<*, *>
+        ?: throw GradleException("Invalid relay source build receipt")
+    requiredString(receipt, "sha256", "relay build receipt").also {
+        if (!it.matches(relaySha256Pattern)) throw GradleException("Invalid bundled relay SHA-256")
+    }
+} else ""
 
 plugins {
     alias(libs.plugins.android.application)
@@ -131,6 +150,7 @@ android {
         )
         buildConfigField("String", "RELAY_BINARY_URL", buildConfigString(relayBinaryUrl))
         buildConfigField("String", "RELAY_BINARY_SHA256", buildConfigString(relayBinarySha256))
+        buildConfigField("String", "RELAY_BUNDLED_SHA256", buildConfigString(relayBundledSha256))
     }
 
     val releaseSigningConfig = if (hasCompleteReleaseSigningConfig) {
@@ -178,11 +198,17 @@ val verifyBundledRelayBinary by tasks.registering {
         .withPropertyName("bundledRelayBinary")
         .optional()
     inputs.file(relayLockFile)
+    inputs.file(relayBuildReceiptFile).optional()
+    inputs.file(rootProject.file("scripts/relay-source.py"))
+    inputs.property("configuredBundledSha256", relayBundledSha256)
 
     doLast {
+        project.exec {
+            commandLine("python3", rootProject.file("scripts/relay-source.py"), "verify-bundle")
+        }
         if (!relayBinary.asFile.isFile) {
             throw GradleException(
-                "Bundled relay binary is missing. Run scripts/fetch-relay.sh before building."
+                "Bundled relay binary is missing. Run python3 scripts/relay-source.py build SOURCE_DIR before building."
             )
         }
         val digest = MessageDigest.getInstance("SHA-256")
@@ -195,8 +221,8 @@ val verifyBundledRelayBinary by tasks.registering {
             }
         }
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
-        check(actual == relayBinarySha256) {
-            "Bundled relay checksum mismatch: expected $relayBinarySha256, got $actual"
+        check(actual == relayBundledSha256) {
+            "Bundled relay checksum mismatch: expected $relayBundledSha256, got $actual"
         }
     }
 }
@@ -222,7 +248,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.security:security-crypto:1.1.0")
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

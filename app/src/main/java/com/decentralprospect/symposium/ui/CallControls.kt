@@ -1,5 +1,6 @@
 package com.decentralprospect.symposium
 
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,7 +75,7 @@ fun AppButton(
             .border(1.dp, border, RoundedCornerShape(999.dp))
             .semantics(mergeDescendants = true) {
                 role = Role.Button
-                stateDescription = tr(if (active) "Выбрано" else "Не выбрано")
+                stateDescription = tr(if (active) TextId.SELECTED else TextId.NOT_SELECTED)
             }
             .clickable(role = Role.Button) { onClick() }
             .padding(horizontal = 14.dp),
@@ -108,14 +109,14 @@ fun RoundIconButton(
 
     Box(
         modifier = Modifier
-            .size(50.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .background(if (enabled) background else background.copy(alpha = 0.42f))
             .border(1.dp, resolvedBorder, CircleShape)
             .semantics {
                 role = Role.Button
-                this.contentDescription = tr(contentDescription)
-                if (!enabled) stateDescription = tr("Недоступно")
+                this.contentDescription = contentDescription
+                if (!enabled) stateDescription = tr(TextId.UNAVAILABLE)
             }
             .clickable(enabled = enabled, role = Role.Button) { onClick() },
         contentAlignment = Alignment.Center
@@ -147,14 +148,14 @@ fun RoundTextButton(
 
     Box(
         modifier = Modifier
-            .size(50.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .background(if (enabled) background else background.copy(alpha = 0.42f))
             .border(1.dp, resolvedBorder, CircleShape)
             .semantics {
                 role = Role.Button
-                this.contentDescription = tr(contentDescription)
-                if (!enabled) stateDescription = tr("Недоступно")
+                this.contentDescription = contentDescription
+                if (!enabled) stateDescription = tr(TextId.UNAVAILABLE)
             }
             .clickable(enabled = enabled, role = Role.Button) { onClick() },
         contentAlignment = Alignment.Center
@@ -192,13 +193,20 @@ fun ControlBar(
     onModeratorBubbleDismiss: () -> Unit = {},
     onModerator: () -> Unit = {}
 ) {
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     Surface(color = callBackgroundColor()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                .padding(
+                    start = 6.dp,
+                    end = 6.dp,
+                    top = if (isLandscape) 5.dp else 10.dp,
+                    bottom = if (isLandscape) 6.dp else 12.dp
+                ),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically
         ) {
             AudioRouteButton(
@@ -210,7 +218,7 @@ fun ControlBar(
 
             RoundIconButton(
                 icon = if (videoEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                contentDescription = tr(if (videoEnabled) "Выключить камеру" else "Включить камеру"),
+                contentDescription = tr(if (videoEnabled) TextId.TURN_CAMERA_OFF else TextId.TURN_CAMERA_ON),
                 onClick = onVideo,
                 background = if (videoEnabled) callControlBackgroundColor() else accessibleDangerColor(),
                 tint = if (videoEnabled) callIconColor() else Color.White
@@ -218,7 +226,7 @@ fun ControlBar(
 
             RoundTextButton(
                 text = "✋",
-                contentDescription = tr(if (handRaised) "Опустить руку" else "Поднять руку"),
+                contentDescription = tr(if (handRaised) TextId.LOWER_HAND else TextId.RAISE_HAND),
                 onClick = onHand,
                 background = if (handRaised) accessibleAccentColor() else callControlBackgroundColor(),
                 tint = if (handRaised) AppOnAccent else callIconColor()
@@ -226,7 +234,11 @@ fun ControlBar(
 
             RoundIconButton(
                 icon = if (micEnabled && !micLocked) Icons.Filled.Mic else Icons.Filled.MicOff,
-                contentDescription = tr(if (micLocked) "Микрофон заблокирован модератором" else if (micEnabled) "Выключить микрофон" else "Включить микрофон"),
+                contentDescription = tr(
+                    if (micLocked) TextId.MICROPHONE_LOCKED_BY_MODERATOR
+                    else if (micEnabled) TextId.MUTE_MICROPHONE
+                    else TextId.UNMUTE_MICROPHONE
+                ),
                 onClick = onMic,
                 background = if (micEnabled && !micLocked) callControlBackgroundColor() else accessibleDangerColor(),
                 tint = if (micEnabled && !micLocked) callIconColor() else Color.White,
@@ -235,7 +247,7 @@ fun ControlBar(
 
             RoundIconButton(
                 icon = Icons.Filled.CallEnd,
-                contentDescription = tr("Завершить звонок"),
+                contentDescription = tr(TextId.END_CALL),
                 onClick = onDisconnect,
                 background = accessibleDangerColor(),
                 tint = Color.White
@@ -274,12 +286,12 @@ internal fun AudioRouteButton(
     val speakerSelected = route == AudioOutputRoute.SPEAKER
 
     Box(
-        modifier = Modifier.size(54.dp),
+        modifier = Modifier.size(48.dp),
         contentAlignment = Alignment.Center
     ) {
         RoundIconButton(
             icon = icon,
-            contentDescription = tr("Выбрать вывод звука"),
+            contentDescription = tr(TextId.CHOOSE_AUDIO_OUTPUT),
             onClick = {
                 if (headsetAvailable) {
                     menuOpen = true
@@ -415,12 +427,12 @@ internal fun ModeratorBottomButton(
     val hasLobbyNotifications = pendingCount > 0
 
     Box(
-        modifier = Modifier.size(54.dp),
+        modifier = Modifier.size(48.dp),
         contentAlignment = Alignment.Center
     ) {
         RoundIconButton(
             icon = Icons.Filled.AdminPanelSettings,
-            contentDescription = tr("Панель модератора"),
+            contentDescription = tr(TextId.MODERATOR_PANEL),
             onClick = onClick,
             background = when {
                 muteAllEnabled -> accessibleDangerColor()
@@ -533,7 +545,7 @@ internal fun ModeratorComicBubble(
                 )
 
                 Text(
-                    text = if (count == 1) "ждёт входа" else "ждут входа",
+                    text = tr(if (count == 1) TextId.WAITS_TO_JOIN else TextId.WAIT_TO_JOIN),
                     color = callTextPrimaryColor(),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -552,7 +564,7 @@ internal fun ModeratorComicBubble(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Close,
-                        contentDescription = tr("Скрыть"),
+                        contentDescription = tr(TextId.HIDE),
                         tint = AppAccent,
                         modifier = Modifier.size(17.dp)
                     )

@@ -27,7 +27,7 @@ internal fun CallRuntime.onRecordAudioPermissionResult(granted: Boolean) {
 
         Toast.makeText(
             appContext,
-            tr("Без разрешения микрофон останется выключенным"),
+            tr(TextId.WITHOUT_PERMISSION_THE_MICROPHONE_WILL_REMAIN_MUTED),
             Toast.LENGTH_SHORT
         ).show()
 
@@ -58,12 +58,12 @@ internal fun CallRuntime.onCameraPermissionResult(granted: Boolean) {
         videoEnabledState = false
         videoStartInProgress = false
         uiStateBinder?.setVideo(false)
-        setStatus(tr("Разрешение камеры отклонено"))
+        setStatus(tr(TextId.CAMERA_PERMISSION_DENIED))
         cameraRuntimeState = "permission-denied"
         updateCameraDebug("permission-denied")
         Toast.makeText(
             appContext,
-            tr("Без разрешения камера останется выключенной"),
+            tr(TextId.WITHOUT_PERMISSION_THE_CAMERA_WILL_REMAIN_OFF),
             Toast.LENGTH_SHORT
         ).show()
         diagnosticWarning(TAG, "CAMERA permission denied")

@@ -1,7 +1,7 @@
 package com.decentralprospect.symposium
 
-import android.util.Base64
 import okhttp3.OkHttpClient
+import okio.ByteString.Companion.toByteString
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
@@ -12,29 +12,18 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 internal fun CallRuntime.parseHostPort(input: String): HostPort {
-    var s = input.trim()
-    s = s.removePrefix("https://")
-        .removePrefix("http://")
-        .removePrefix("wss://")
-        .removePrefix("ws://")
-        .trim()
-    s = s.substringBefore("/")
-    val host = s.substringBefore(":")
-    val port = s.substringAfter(":", "").toIntOrNull() ?: 443
-    return HostPort(host, port)
+    val endpoint = requireNotNull(parseRelayEndpoint(input)) { "Invalid relay endpoint" }
+    return HostPort(endpoint.host, endpoint.port)
 }
 
-internal fun CallRuntime.normalizeTlsPin(pin: String): String {
-    val p = pin.trim()
-    require(p.startsWith("sha256/")) { "TLS pin must start with sha256/" }
-    require(p.length > "sha256/".length) { "TLS pin is empty" }
-    return p
-}
+internal fun CallRuntime.normalizeTlsPin(pin: String): String = normalizeRelayTlsPin(pin)
 
 internal class SpkiPinTrustManager(expectedPinRaw: String) : X509TrustManager {
-    private val expectedPin = normalizePin(expectedPinRaw)
+    private val expectedPin = normalizeRelayTlsPin(expectedPinRaw)
 
-    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+        throw CertificateException("Client certificates are not accepted")
+    }
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
@@ -42,26 +31,21 @@ internal class SpkiPinTrustManager(expectedPinRaw: String) : X509TrustManager {
             throw CertificateException("Empty server certificate chain")
         }
 
-        val peerPins = mutableListOf<String>()
-        for (cert in chain) {
-            val pin = spkiPin(cert)
-            peerPins += pin
-            if (secureEquals(pin, expectedPin)) return
+        val leaf = chain[0]
+        leaf.checkValidity()
+        val leafPin = spkiPin(leaf)
+        if (secureEquals(leafPin, expectedPin)) {
+            return
         }
 
         throw CertificateException(
-            buildString {
-                append("SPKI pin mismatch.\n")
-                append("Expected: ").append(expectedPin).append('\n')
-                append("Peer pins:\n")
-                peerPins.forEach { append("  ").append(it).append('\n') }
-            }
+            "Leaf SPKI pin mismatch. Expected: $expectedPin; leaf: $leafPin"
         )
     }
 
     private fun spkiPin(cert: X509Certificate): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(cert.publicKey.encoded)
-        val b64 = Base64.encodeToString(digest, Base64.NO_WRAP)
+        val b64 = digest.toByteString().base64()
         return "sha256/$b64"
     }
 
@@ -70,15 +54,6 @@ internal class SpkiPinTrustManager(expectedPinRaw: String) : X509TrustManager {
             a.toByteArray(Charsets.UTF_8),
             b.toByteArray(Charsets.UTF_8)
         )
-    }
-
-    companion object {
-        private fun normalizePin(pin: String): String {
-            val p = pin.trim()
-            require(p.startsWith("sha256/")) { "TLS pin must start with sha256/" }
-            require(p.length > "sha256/".length) { "TLS pin is empty" }
-            return p
-        }
     }
 }
 

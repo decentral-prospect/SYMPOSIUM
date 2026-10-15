@@ -18,6 +18,10 @@ internal fun CallRuntime.ensureVideoEnabled() {
     videoStartInProgress = true
 
     try {
+        startCallService(
+            microphone = micEnabledState && !forcedMutedByModerator,
+            camera = true
+        )
         if (localVideoTrack == null || videoSource == null || surfaceTextureHelper == null) {
             createOrAttachVideoTrackInternal()
         } else if (videoCapturer == null) {
@@ -54,6 +58,10 @@ internal fun CallRuntime.ensureVideoEnabled() {
         )
     } catch (t: Throwable) {
         videoEnabledState = false
+        startCallService(
+            microphone = micEnabledState && !forcedMutedByModerator,
+            camera = false
+        )
         setVideoUi(false)
         cameraRuntimeState = "error"
         updateCameraDebug("enable-failed:${t.message}")
@@ -62,6 +70,38 @@ internal fun CallRuntime.ensureVideoEnabled() {
     } finally {
         videoStartInProgress = false
     }
+}
+
+internal fun CallRuntime.recoverVideoCaptureAfterForeground() {
+    if (!videoEnabledState || !joinedRoom || videoStartInProgress) return
+
+    videoStartInProgress = true
+    runCatching {
+        startCallService(
+            microphone = micEnabledState && !forcedMutedByModerator,
+            camera = true
+        )
+        restartCapture(preferOppositeFacing = false)
+        localVideoTrack?.setEnabled(true)
+        VideoTracksStore.setTrack(rtcController.selfPeerId(), localVideoTrack)
+        cameraRuntimeState = "capturing"
+        setVideoUi(true)
+        sendSelfMediaState(videoEnabled = true)
+        scheduleCameraWatchdog()
+        updateCameraDebug("foreground-recovered")
+    }.onFailure { error ->
+        videoEnabledState = false
+        localVideoTrack?.setEnabled(false)
+        setVideoUi(false)
+        sendSelfMediaState(videoEnabled = false)
+        startCallService(
+            microphone = micEnabledState && !forcedMutedByModerator,
+            camera = false
+        )
+        cameraRuntimeState = "error"
+        updateCameraDebug("foreground-recovery-failed:${error.message}")
+    }
+    videoStartInProgress = false
 }
 
 internal fun CallRuntime.createOrAttachVideoTrackInternal() {
@@ -233,6 +273,7 @@ internal fun CallRuntime.startNewCapture(source: VideoSource, sth: SurfaceTextur
             videoCapturer = capturer
             activeCapturerName = selection.name
             activeCameraFacing = selection.facing
+            VideoTracksStore.setSelfCameraFacing(selection.facing)
             activeCapturerBackend = selection.backend
             firstFrameSeen = false
             lastFirstFrameUptimeMs = null
