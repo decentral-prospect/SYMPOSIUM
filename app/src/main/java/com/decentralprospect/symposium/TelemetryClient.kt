@@ -236,7 +236,7 @@ internal class TelemetryClient private constructor(context: Context) {
         val url = if (endpoint.endsWith("/api/v1/events")) endpoint else "$endpoint/api/v1/events"
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "Symposium/${BuildConfig.VERSION_NAME} (Android)")
+            .header("User-Agent", "SYMPOSIUM/${BuildConfig.VERSION_NAME} (Android)")
             .header("X-Symposium-Telemetry-Protocol", TELEMETRY_PROTOCOL_VERSION)
             .post(body)
             .build()

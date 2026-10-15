@@ -126,8 +126,8 @@
 2070	ru	Серверов пока нет. Для создания встречи добавьте сервер
 2071	ru	Нет adminToken. Нажмите, чтобы переустановить Relay.
 2072	ru	Токен содержит некорректный ключ шифрования.
-2073	ru	Токен не распознан. Вставьте токен приглашения Symposium
-2074	ru	Токен не распознан. Вставьте токен приглашения Symposium
+2073	ru	Токен не распознан. Вставьте токен приглашения SYMPOSIUM
+2074	ru	Токен не распознан. Вставьте токен приглашения SYMPOSIUM
 2075	ru	Не удалось проверить защищённое соединение с сервером.
 2076	ru	Сервер отклонил подключение.
 2077	ru	Нет TLS pin. Нажмите, чтобы переустановить Relay.
@@ -436,16 +436,16 @@
 7026	ru	Приватность
 7027	ru	Защита при запуске
 7028	ru	Запрашивать пароль устройства при запуске и защищать им SSH-ключи, токены и секреты конференций.
-7029	ru	Запрашивать пароль устройства при запуске Symposium, если сохранены SSH-ключи или другие секреты.
+7029	ru	Запрашивать пароль устройства при запуске SYMPOSIUM, если сохранены SSH-ключи или другие секреты.
 7030	ru	Русский
 7031	ru	Настройки
 7032	ru	Чтобы включить защиту, сначала настройте блокировку экрана устройства
-7033	ru	На устройстве обнаружены признаки root-доступа. Приложения с root могут читать секреты, подменять интерфейс и перехватывать данные Symposium. Приложение продолжит работу.
+7033	ru	На устройстве обнаружены признаки root-доступа. Приложения с root могут читать секреты, подменять интерфейс и перехватывать данные SYMPOSIUM. Приложение продолжит работу.
 7034	ru	Защита при запуске выключена
 7035	ru	Защита при запуске включена
 7036	ru	Системная
 7037	ru	При согласии отправляются только обезличенные события установки, запуска и диагностики. Имена, комнаты, адреса серверов и содержимое конференций не передаются.
-7038	ru	До вашего согласия Symposium не отправляет никакую телеметрию. Разрешение можно отозвать в настройках.
+7038	ru	До вашего согласия SYMPOSIUM не отправляет никакую телеметрию. Разрешение можно отозвать в настройках.
 7039	ru	Выключено по умолчанию; без согласия ничего не отправляется.
 7040	ru	Тема
 7041	ru	Тема: {0}
@@ -454,12 +454,12 @@
 7044	ru	Использовать язык устройства
 7045	ru	Использовать тему устройства
 7046	ru	Защита данных
-7047	ru	Symposium может защищать SSH-ключи, токены и другие данные приложения паролем устройства или биометрией, если они настроены. Защиту можно включить сейчас или позже в настройках.
+7047	ru	SYMPOSIUM может защищать SSH-ключи, токены и другие данные приложения паролем устройства или биометрией, если они настроены. Защиту можно включить сейчас или позже в настройках.
 
 # [8000-8999] О приложении и обновления
 8001	ru	О приложении
 8002	ru	Доступная версия: {0}
-8003	ru	Доступна новая версия Symposium.
+8003	ru	Доступна новая версия SYMPOSIUM.
 8004	ru	Электронная почта
 8005	ru	Установленная версия: {0}
 8006	ru	Открыть сайт
@@ -468,8 +468,8 @@
 8009	ru	Доступно обновление
 8010	ru	Версия и информация о приложении
 8011	ru	Версия: {0}
-8012	ru	Обновить приложение можно на сайте Symposium. Новости о выпусках доступны в Telegram-канале.
-8013	ru	Подпишитесь на Telegram-канал и следите за сайтом Symposium. Там публикуются обновления, новости и другая полезная информация.
+8012	ru	Обновить приложение можно на сайте SYMPOSIUM. Новости о выпусках доступны в Telegram-канале.
+8013	ru	Подпишитесь на Telegram-канал и следите за сайтом SYMPOSIUM. Там публикуются обновления, новости и другая полезная информация.
 8014	ru	Новости и обновления
 8015	ru	Официальный сайт
 8016	ru	Будьте в курсе
@@ -480,9 +480,9 @@
 8021	ru	support@symposium-dp.app
 
 # [9000-9999] Системные и фоновые сообщения
-9001	ru	Дайте Symposium возможность отправлять анонимную диагностику: длительность подключения, ошибки конференции, высокий ping и итог установки сервера.
+9001	ru	Дайте SYMPOSIUM возможность отправлять анонимную диагностику: длительность подключения, ошибки конференции, высокий ping и итог установки сервера.
 9002	ru	Во время установки найден существующий сервис; проверка…
-9003	ru	Symposium
+9003	ru	SYMPOSIUM
 9004	ru	АВТО
 9005	ru	Работающая установка найдена; конфигурация синхронизирована
 9006	ru	Звонки
@@ -531,11 +531,11 @@
 9050	ru	Модератор разрешил включить микрофон
 9051	ru	Сервер отклонил подключение из-за несовместимой версии клиента.
 9052	ru	Нет TLS pin или moderator_key
-9053	ru	Касание заблокировано: другое приложение перекрывает Symposium
+9053	ru	Касание заблокировано: другое приложение перекрывает SYMPOSIUM
 9054	ru	Голосовое соединение активно
 9055	ru	{0} ждут входа
 9056	ru	{0} ждёт входа
-9057	ru	Symposium не сохраняет пароль сервера. Вместо него он создаст SSH-ключ и защитит доступ к нему и другим данным приложения паролем устройства, или биометрией, если они настроены
+9057	ru	SYMPOSIUM не сохраняет пароль сервера. Вместо него он создаст SSH-ключ и защитит доступ к нему и другим данным приложения паролем устройства, или биометрией, если они настроены
 9058	ru	Без разрешения камера останется выключенной
 9059	ru	Без разрешения микрофон останется выключенным
 9060	ru	Сменить E2EE-ключ
@@ -667,8 +667,8 @@
 2070	en	There are no servers yet. Add one to create a meeting
 2071	en	The admin token is missing. Tap to reinstall Relay.
 2072	en	The token contains an invalid encryption key.
-2073	en	The token was not recognized. Paste a Symposium invitation token
-2074	en	The token was not recognized. Paste a Symposium invitation token
+2073	en	The token was not recognized. Paste a SYMPOSIUM invitation token
+2074	en	The token was not recognized. Paste a SYMPOSIUM invitation token
 2075	en	The secure server connection could not be verified.
 2076	en	The server rejected the connection.
 2077	en	The TLS pin is missing. Tap to reinstall Relay.
@@ -977,16 +977,16 @@
 7026	en	Privacy
 7027	en	Protection at startup
 7028	en	Require the device screen lock at startup and use it to protect SSH keys, tokens, and conference secrets.
-7029	en	Require the device screen lock when Symposium starts if SSH keys or other secrets are saved.
+7029	en	Require the device screen lock when SYMPOSIUM starts if SSH keys or other secrets are saved.
 7030	en	Russian
 7031	en	Settings
 7032	en	Set up a device screen lock before enabling startup protection
-7033	en	Signs of root access were detected on this device. Apps with root access can read secrets, spoof the interface, and intercept Symposium data. The app will continue to work.
+7033	en	Signs of root access were detected on this device. Apps with root access can read secrets, spoof the interface, and intercept SYMPOSIUM data. The app will continue to work.
 7034	en	Startup protection disabled
 7035	en	Startup protection enabled
 7036	en	System
 7037	en	With consent, only anonymized installation, launch, and diagnostic events are sent. Names, rooms, server addresses, and conference content are never sent.
-7038	en	Symposium does not send any telemetry before you consent. You can withdraw permission in Settings.
+7038	en	SYMPOSIUM does not send any telemetry before you consent. You can withdraw permission in Settings.
 7039	en	Off by default; nothing is sent without explicit consent.
 7040	en	Theme
 7041	en	Theme: {0}
@@ -995,12 +995,12 @@
 7044	en	Use the device language
 7045	en	Use the device theme
 7046	en	Data protection
-7047	en	Symposium can protect SSH keys, tokens, and other app data with your device password or biometrics, if configured. You can enable this protection now or later in Settings.
+7047	en	SYMPOSIUM can protect SSH keys, tokens, and other app data with your device password or biometrics, if configured. You can enable this protection now or later in Settings.
 
 # [8000-8999] About & updates
 8001	en	About
 8002	en	Available version: {0}
-8003	en	A new version of Symposium is available.
+8003	en	A new version of SYMPOSIUM is available.
 8004	en	Email
 8005	en	Installed version: {0}
 8006	en	Open website
@@ -1009,8 +1009,8 @@
 8009	en	Update available
 8010	en	Version and app information
 8011	en	Version: {0}
-8012	en	You can update the app on the Symposium website. Release news is available in the Telegram channel.
-8013	en	Subscribe to the Telegram channel and follow the Symposium website for updates, news, and other useful information.
+8012	en	You can update the app on the SYMPOSIUM website. Release news is available in the Telegram channel.
+8013	en	Subscribe to the Telegram channel and follow the SYMPOSIUM website for updates, news, and other useful information.
 8014	en	News and updates
 8015	en	Official website
 8016	en	Stay up to date
@@ -1021,9 +1021,9 @@
 8021	en	support@symposium-dp.app
 
 # [9000-9999] System & background
-9001	en	Allow Symposium to send anonymous diagnostics: connection duration, conference errors, high ping, and server installation results.
+9001	en	Allow SYMPOSIUM to send anonymous diagnostics: connection duration, conference errors, high ping, and server installation results.
 9002	en	An existing service was found during installation; checking…
-9003	en	Symposium
+9003	en	SYMPOSIUM
 9004	en	AUTO
 9005	en	A healthy installation was found; configuration synchronized
 9006	en	Calls
@@ -1072,11 +1072,11 @@
 9050	en	The moderator allowed you to unmute
 9051	en	The server rejected the connection because the client version is incompatible.
 9052	en	TLS pin or moderator_key is missing
-9053	en	Touch blocked: another app is covering Symposium
+9053	en	Touch blocked: another app is covering SYMPOSIUM
 9054	en	Voice connection active
 9055	en	{0} are waiting to join
 9056	en	{0} is waiting to join
-9057	en	Symposium does not save the server password. Instead, it creates an SSH key and protects access to it and other app data with your device password or biometrics, if configured
+9057	en	SYMPOSIUM does not save the server password. Instead, it creates an SSH key and protects access to it and other app data with your device password or biometrics, if configured
 9058	en	Without permission, the camera will remain off
 9059	en	Without permission, the microphone will remain muted
 9060	en	Change E2EE key

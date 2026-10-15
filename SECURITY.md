@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-The latest stable Symposium Android release receives security fixes. The most
+The latest stable SYMPOSIUM Android release receives security fixes. The most
 recent prerelease is supported on a best-effort basis while it is being tested.
 Older releases are unsupported unless a release note explicitly says otherwise.
 
-Users should update both the Android client and installed Symposium Relay
+Users should update both the Android client and installed SymposiumRelay
 instances promptly after a security release.
 
 ## Reporting a vulnerability
@@ -50,7 +50,7 @@ Reports are especially useful when they affect:
 - Android Keystore use and local secret storage;
 - authentication bypasses, privilege escalation, or unauthorized moderation.
 
-Issues that exist only in Symposium Relay should normally be reported through
+Issues that exist only in SymposiumRelay should normally be reported through
 that repository's private security channel. If the boundary is unclear, report
 it here and the maintainers will coordinate privately.
 

@@ -1,4 +1,4 @@
-# Symposium Android Client
+# SYMPOSIUM Android Client
 
 
 
@@ -10,9 +10,9 @@ Privacy-focused conference calls for communities operating under censorship and 
 
 
 
-Symposium is an open-source Android application for audio and video conferences designed to remain usable in environments with unstable connectivity, network interference, and censorship.
+SYMPOSIUM is an open-source Android application for audio and video conferences designed to remain usable in environments with unstable connectivity, network interference, and censorship.
 
-The application connects to self-hosted Symposium Relay servers and uses WebRTC for real-time media transmission.
+The application connects to self-hosted SymposiumRelay servers and uses WebRTC for real-time media transmission.
 
 
 
@@ -43,9 +43,9 @@ The application connects to self-hosted Symposium Relay servers and uses WebRTC 
 
 
 
-Symposium uses its own minimal telemetry service. Telemetry is disabled by default and no installation ID, lifecycle event, consent event, or diagnostic data is transmitted until the user explicitly opts in.
+SYMPOSIUM uses its own minimal telemetry service. Telemetry is disabled by default and no installation ID, lifecycle event, consent event, or diagnostic data is transmitted until the user explicitly opts in.
 
-After explicit consent, Symposium sends a limited set of anonymous lifecycle and operational metrics to improve reliability. Revoking consent immediately stops delivery and clears queued telemetry identifiers and events on the device.
+After explicit consent, SYMPOSIUM sends a limited set of anonymous lifecycle and operational metrics to improve reliability. Revoking consent immediately stops delivery and clears queued telemetry identifiers and events on the device.
 
 
 
@@ -72,7 +72,7 @@ ingest endpoint is protected server-side by IP validation and request limits.
 
 ## Media end-to-end encryption
 
-Symposium encrypts encoded Opus and video frames on the sending Android device
+SYMPOSIUM encrypts encoded Opus and video frames on the sending Android device
 and authenticates/decrypts them only on receiving devices. The SFU relay forwards
 the encrypted RTP payloads without receiving the conference key, so it cannot
 listen to, view, transcode, or record the media content.
